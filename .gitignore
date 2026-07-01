@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+outputs/
+*.egg-info/
+kaggle/run_output*/
+kaggle/dataset_metadata_check/
+kaggle/source_dataset/

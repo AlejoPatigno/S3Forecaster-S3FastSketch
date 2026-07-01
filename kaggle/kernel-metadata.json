@@ -1,0 +1,15 @@
+{
+ "id": "alejopatio/s3forecaster-s3fastsketch-m4-cpu",
+ "title": "S3Forecaster S3FastSketch M4 CPU",
+ "code_file": "s3forecaster_s3fastsketch_m4_cpu.ipynb",
+ "language": "python",
+ "kernel_type": "notebook",
+ "is_private": true,
+ "enable_gpu": false,
+ "enable_internet": true,
+ "dataset_sources": [
+  "alejopatio/s3forecaster-s3fastsketch-source"
+ ],
+ "competition_sources": [],
+ "kernel_sources": []
+}
