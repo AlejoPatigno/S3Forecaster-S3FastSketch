@@ -406,6 +406,8 @@ class TorchLinearBaseline(ForecastBaseline):
         weight_decay: float = 0.0,
         epochs: int = 150,
         patience: int = 15,
+        batch_size: int = 16,
+        clip_grad: Optional[float] = None,
     ):
         self.architecture = architecture
         self.window_size = int(window_size)
@@ -414,6 +416,10 @@ class TorchLinearBaseline(ForecastBaseline):
         self.weight_decay = float(weight_decay)
         self.epochs = int(epochs)
         self.patience = int(patience)
+        self.batch_size = max(1, int(batch_size))
+        self.clip_grad = (
+            None if clip_grad is None else float(clip_grad)
+        )
 
     def fit(self, series: Any):
         import torch
@@ -439,29 +445,75 @@ class TorchLinearBaseline(ForecastBaseline):
         else:
             raise ValueError(f"Unknown architecture {self.architecture}.")
 
-        optimizer = torch.optim.Adam(model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+        from torch.utils.data import DataLoader, TensorDataset
+
+        train_dataset = TensorDataset(X_train, y_train)
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=min(self.batch_size, len(train_dataset)),
+            shuffle=False,
+        )
+
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+        )
+
         criterion = nn.MSELoss()
-        best_state, best_loss, bad = None, np.inf, 0
+
+        best_state = None
+        best_loss = np.inf
+        bad = 0
+
         for _ in range(self.epochs):
             model.train()
-            optimizer.zero_grad()
-            loss = criterion(model(X_train), y_train)
-            loss.backward()
-            optimizer.step()
+
+            for x_batch, y_batch in train_loader:
+                optimizer.zero_grad(set_to_none=True)
+
+                prediction = model(x_batch)
+                loss = criterion(prediction, y_batch)
+
+                if not torch.isfinite(loss):
+                    raise FloatingPointError(
+                        "NLinear/DLinear produced a non-finite training loss."
+                    )
+
+                loss.backward()
+
+                if self.clip_grad is not None and self.clip_grad > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(),
+                        max_norm=self.clip_grad,
+                    )
+
+                optimizer.step()
+
             model.eval()
+
             with torch.no_grad():
-                val_loss = float(criterion(model(X_val), y_val).item())
+                val_prediction = model(X_val)
+                val_loss = float(
+                    criterion(val_prediction, y_val).item()
+                )
+
             if val_loss < best_loss - 1e-8:
-                best_loss, bad = val_loss, 0
+                best_loss = val_loss
+                bad = 0
                 best_state = copy.deepcopy(model.state_dict())
             else:
                 bad += 1
+
                 if bad >= self.patience:
                     break
+
         if best_state is not None:
             model.load_state_dict(best_state)
+
         self.model_ = model
         self.scaled_history_ = list(scaled)
+
         return self
 
     def predict(self, horizon: int):
@@ -481,7 +533,7 @@ class TorchLinearBaseline(ForecastBaseline):
 
 
 class ARKANBaseline(ForecastBaseline):
-    """Autoregressive KAN baseline. Requires the optional pykan/kan package."""
+    """Autoregressive KAN baseline using the optional pykan package."""
 
     def __init__(
         self,
@@ -495,9 +547,26 @@ class ARKANBaseline(ForecastBaseline):
         weight_decay: float = 0.0,
         epochs: int = 100,
         patience: int = 12,
+        batch_size: int = 16,
+        clip_grad: Optional[float] = None,
     ):
-        self.params = locals().copy()
-        self.params.pop("self")
+        self.params = {
+            "window_size": int(window_size),
+            "h1": int(h1),
+            "h2": int(h2),
+            "n_hidden_layers": int(n_hidden_layers),
+            "grid": int(grid),
+            "k": int(k),
+            "learning_rate": float(learning_rate),
+            "weight_decay": float(weight_decay),
+            "epochs": int(epochs),
+            "patience": int(patience),
+            "batch_size": max(1, int(batch_size)),
+            "clip_grad": (
+                None if clip_grad is None else float(clip_grad)
+            ),
+        }
+
         self.window_size = int(window_size)
 
     @staticmethod
@@ -517,74 +586,233 @@ class ARKANBaseline(ForecastBaseline):
     def fit(self, series: Any):
         import torch
         import torch.nn as nn
+        from torch.utils.data import DataLoader, TensorDataset
 
         set_global_seed(SEED)
+
         self.series_ = ensure_series(series)
         self.scaler_ = StandardScaler()
-        scaled = self.scaler_.fit_transform(self.series_.to_numpy().reshape(-1, 1)).reshape(-1)
-        X_raw, y = make_one_step_windows(scaled, self.window_size)
+
+        scaled = self.scaler_.fit_transform(
+            self.series_.to_numpy().reshape(-1, 1)
+        ).reshape(-1)
+
+        X_raw, y = make_one_step_windows(
+            scaled,
+            self.window_size,
+        )
+
         if len(X_raw) < 12:
             raise ValueError("Too few one-step windows for ARKAN.")
-        split = min(max(int(0.8 * len(X_raw)), 1), len(X_raw) - 1)
-        ar = LinearRegression(fit_intercept=False).fit(X_raw[:split], y[:split])
+
+        split = min(
+            max(int(0.8 * len(X_raw)), 1),
+            len(X_raw) - 1,
+        )
+
+        # Linear autoregressive relevance weights
+        ar = LinearRegression(
+            fit_intercept=False
+        ).fit(
+            X_raw[:split],
+            y[:split],
+        )
+
         self.ar_weights_ = ar.coef_.reshape(-1)
         X = X_raw * self.ar_weights_[None, :]
 
+        device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
         dtype = torch.float64
-        X_train = torch.tensor(X[:split], dtype=dtype)
-        y_train = torch.tensor(y[:split, None], dtype=dtype)
-        X_val = torch.tensor(X[split:], dtype=dtype)
-        y_val = torch.tensor(y[split:, None], dtype=dtype)
+
+        X_train = torch.tensor(
+            X[:split],
+            dtype=dtype,
+        )
+        y_train = torch.tensor(
+            y[:split, None],
+            dtype=dtype,
+        )
+
+        X_val = torch.tensor(
+            X[split:],
+            dtype=dtype,
+            device=device,
+        )
+        y_val = torch.tensor(
+            y[split:, None],
+            dtype=dtype,
+            device=device,
+        )
 
         p = self.params
-        width = [self.window_size, int(p["h1"]), 1]
-        if int(p["n_hidden_layers"]) == 2:
-            width = [self.window_size, int(p["h1"]), int(p["h2"]), 1]
-        model = self._kan_class()(width=width, grid=int(p["grid"]), k=int(p["k"]), auto_save=False)
-        model = model.to(dtype=dtype)
-        optimizer = torch.optim.Adam(
-            model.parameters(), lr=float(p["learning_rate"]), weight_decay=float(p["weight_decay"])
+
+        width = [
+            self.window_size,
+            p["h1"],
+            1,
+        ]
+
+        if p["n_hidden_layers"] == 2:
+            width = [
+                self.window_size,
+                p["h1"],
+                p["h2"],
+                1,
+            ]
+
+        KANClass = self._kan_class()
+
+        # MultKAN.to() accepts a device only. Pass the device through
+        # the constructor and use Module.double() for float64.
+        model = KANClass(
+            width=width,
+            grid=p["grid"],
+            k=p["k"],
+            auto_save=False,
+            device=str(device),
         )
+
+        model = model.double()
+
+        # Recommended by pykan when using a custom training loop and
+        # not using symbolic regression.
+        if hasattr(model, "speed"):
+            model.speed()
+
+        train_dataset = TensorDataset(
+            X_train,
+            y_train,
+        )
+
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=min(
+                p["batch_size"],
+                len(train_dataset),
+            ),
+            shuffle=False,
+        )
+
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=p["learning_rate"],
+            weight_decay=p["weight_decay"],
+        )
+
         criterion = nn.MSELoss()
-        best_state, best_loss, bad = None, np.inf, 0
-        for _ in range(int(p["epochs"])):
+
+        best_state = None
+        best_loss = np.inf
+        bad = 0
+
+        for _ in range(p["epochs"]):
             model.train()
-            optimizer.zero_grad()
-            loss = criterion(model(X_train), y_train)
-            loss.backward()
-            optimizer.step()
+
+            for x_batch, y_batch in train_loader:
+                x_batch = x_batch.to(device)
+                y_batch = y_batch.to(device)
+
+                optimizer.zero_grad(set_to_none=True)
+
+                prediction = model(x_batch)
+                loss = criterion(prediction, y_batch)
+
+                if not torch.isfinite(loss):
+                    raise FloatingPointError(
+                        "ARKAN produced a non-finite training loss."
+                    )
+
+                loss.backward()
+
+                if p["clip_grad"] is not None and p["clip_grad"] > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(),
+                        max_norm=p["clip_grad"],
+                    )
+
+                optimizer.step()
+
             model.eval()
+
             with torch.no_grad():
-                val_loss = float(criterion(model(X_val), y_val).item())
+                val_prediction = model(X_val)
+                val_loss = float(
+                    criterion(
+                        val_prediction,
+                        y_val,
+                    ).item()
+                )
+
             if val_loss < best_loss - 1e-10:
-                best_loss, bad = val_loss, 0
-                best_state = copy.deepcopy(model.state_dict())
+                best_loss = val_loss
+                bad = 0
+                best_state = copy.deepcopy(
+                    model.state_dict()
+                )
             else:
                 bad += 1
-                if bad >= int(p["patience"]):
+
+                if bad >= p["patience"]:
                     break
+
         if best_state is not None:
             model.load_state_dict(best_state)
+
         self.model_ = model
+        self.device_ = device
+        self.dtype_ = dtype
         self.scaled_history_ = list(scaled)
+
         return self
 
     def predict(self, horizon: int):
         import torch
 
         history = list(self.scaled_history_)
-        values = []
-        self.model_.eval()
-        with torch.no_grad():
-            for _ in range(horizon):
-                raw = np.asarray(history[-self.window_size :], dtype=np.float64)
-                x = torch.tensor((raw * self.ar_weights_).reshape(1, -1), dtype=torch.float64)
-                value = float(self.model_(x).reshape(-1)[0].item())
-                values.append(value)
-                history.append(value)
-        forecast = self.scaler_.inverse_transform(np.asarray(values).reshape(-1, 1)).reshape(-1)
-        return pd.Series(forecast, index=make_future_index(self.series_, horizon), name="pred")
+        predictions = []
 
+        self.model_.eval()
+
+        with torch.no_grad():
+            for _ in range(int(horizon)):
+                raw = np.asarray(
+                    history[-self.window_size:],
+                    dtype=np.float64,
+                )
+
+                weighted = raw * self.ar_weights_
+
+                x = torch.tensor(
+                    weighted.reshape(1, -1),
+                    dtype=self.dtype_,
+                    device=self.device_,
+                )
+
+                value = float(
+                    self.model_(x)
+                    .reshape(-1)[0]
+                    .detach()
+                    .cpu()
+                    .item()
+                )
+
+                predictions.append(value)
+                history.append(value)
+
+        forecast = self.scaler_.inverse_transform(
+            np.asarray(predictions).reshape(-1, 1)
+        ).reshape(-1)
+
+        return pd.Series(
+            forecast,
+            index=make_future_index(
+                self.series_,
+                horizon,
+            ),
+            name="pred",
+        )
 
 class CallableBaseline(ForecastBaseline):
     """Adapter for Chronos, TimesFM, Moirai, or any external predictor."""
