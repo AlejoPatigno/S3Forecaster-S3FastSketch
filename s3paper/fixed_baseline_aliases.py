@@ -29,6 +29,20 @@ def normalize_fixed_baseline(name, params):
         }
     elif name == "GaussianProcess" and p.get("kernel_type") == "pairwise":
         p["kernel_type"] = "rbf"
+    elif name == "Chronos":
+        p = {
+            key: value
+            for key, value in p.items()
+            if key
+            in {
+                "model_or_factory",
+                "predict_fn",
+                "model_id",
+                "device_map",
+                "torch_dtype",
+                "prediction_kwargs",
+            }
+        }
     if name == "AR":
         p.setdefault("period", 12)
     return name, p

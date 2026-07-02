@@ -23,6 +23,7 @@ from .s3_forecaster import (
     SimpleFoundationProxy,
 )
 from .s3_fastsketch import FastRollingFoundation, S3FastSketchForecaster
+from .chronos import ChronosZeroShotModel, chronos_predict_fixed_horizon
 
 __all__ = [
     "S3Forecaster",
@@ -31,6 +32,8 @@ __all__ = [
     "SimpleFoundationProxy",
     "FastRollingFoundation",
     "EchoStateFeatureExtractor",
+    "ChronosZeroShotModel",
+    "chronos_predict_fixed_horizon",
     "mape",
     "smape",
     "point_metrics",
