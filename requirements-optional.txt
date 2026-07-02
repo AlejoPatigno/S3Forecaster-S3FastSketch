@@ -3,4 +3,5 @@ tensorflow>=2.13
 # torch should normally be installed using the wheel matching the available CUDA runtime.
 torch>=2.1
 prophet>=1.1
+chronos-forecasting>=2.3
 # pykan package name and version depend on the selected KAN implementation.

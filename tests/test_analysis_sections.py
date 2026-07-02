@@ -6,7 +6,11 @@ import pandas as pd
 from s3paper.ablation_study import run_fastsketch_ablation, run_s3_ablation_study
 from s3paper.baselines import evaluate_baseline
 from s3paper.data_efficiency import run_data_efficiency_analysis
-from s3paper.multi_prior_robustness import RollingPrior, run_multi_prior_robustness
+from s3paper.multi_prior_robustness import (
+    RollingPrior,
+    default_prior_factories,
+    run_multi_prior_robustness,
+)
 from s3paper.residual_analysis import analyze_forecast_residuals
 from s3paper.s3_forecaster_experiment import evaluate_s3_forecaster
 from s3paper.shock_analysis import compare_s3_models_on_shocks
@@ -44,6 +48,13 @@ def _params():
         "oob_split_ratio": 0.65,
     }
     return s3, fast
+
+
+class MockChronos:
+    def predict(self, history, horizon=1):
+        last = float(history.iloc[-1])
+        index = pd.date_range(history.index[-1], periods=horizon + 1, freq="ME")[1:]
+        return pd.Series(np.repeat(last, horizon), index=index)
 
 
 def test_required_analysis_sections_execute():
@@ -99,3 +110,32 @@ def test_required_analysis_sections_execute():
         "SeasonalNaive", train, test, {"seasonal_period": 12}
     )
     assert len(baseline["forecast"]) == len(test)
+
+
+def test_chronos_baseline_and_prior_execute_with_mock():
+    train, test = _experiment_data()
+    s3, fast = _params()
+
+    baseline = evaluate_baseline(
+        "Chronos",
+        train,
+        test,
+        {"model_or_factory": MockChronos},
+    )
+    assert len(baseline["forecast"]) == len(test)
+    assert np.isfinite(baseline["metrics"]["rmse"])
+
+    prior_factories = default_prior_factories(
+        foundation_window=6,
+        chronos_model_or_factory=MockChronos,
+    )
+    prior_factories = {name: prior_factories[name] for name in ("chronos",)}
+    result = run_multi_prior_robustness(
+        train,
+        test,
+        prior_factories,
+        s3_params=s3,
+        fastsketch_params=fast,
+    )
+    assert set(result["summary"]["prior"]) == {"chronos"}
+    assert set(result["summary"]["status"]) == {"ok"}

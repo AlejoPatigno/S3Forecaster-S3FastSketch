@@ -141,6 +141,8 @@ cells = [
         RUN_OPTUNA = False
         RUN_OPTIONAL_DEEP_BASELINES = False
         RUN_PROPHET_PRIOR = False
+        RUN_CHRONOS_BASELINE = False
+        RUN_CHRONOS_PRIOR = False
 
         SERIES_ID = "M1"
         ROW_INDEX = 0
@@ -315,6 +317,7 @@ cells = [
         }
 
         BASELINE_PARAMS = {
+            "Chronos": {"model_id": "amazon/chronos-bolt-small", "device_map": "cpu"},
             "ETS": {"error": "add", "trend": "add", "seasonal": "add", "seasonal_periods": 12, "damped_trend": True},
             "ARIMA": {"p": 4, "d": 2, "q": 5, "trend": "n"},
             "AR": {"lags": 34, "trend": "t", "seasonal": True},
@@ -329,6 +332,9 @@ cells = [
                 "normalize_y": False,
             },
         }
+
+        if not RUN_CHRONOS_BASELINE:
+            BASELINE_PARAMS.pop("Chronos", None)
         """
     ),
     markdown("## Proposed Models"),
@@ -478,6 +484,8 @@ cells = [
             "KernelRidge",
             "GaussianProcess",
         ]
+        if RUN_CHRONOS_BASELINE:
+            data_efficiency_models.append("Chronos")
 
         de_result = run_data_efficiency_analysis(
             train_series=train_series,
@@ -499,10 +507,14 @@ cells = [
     code(
         """
         prior_factories = default_prior_factories(
-            foundation_window=S3_POINT_PARAMS["foundation_window"]
+            foundation_window=S3_POINT_PARAMS["foundation_window"],
+            include_chronos=RUN_CHRONOS_PRIOR,
+            chronos_kwargs={"model_id": "amazon/chronos-bolt-small", "device_map": "cpu"},
         )
         if not RUN_PROPHET_PRIOR:
             prior_factories = {name: factory for name, factory in prior_factories.items() if name != "prophet"}
+        if not RUN_CHRONOS_PRIOR:
+            prior_factories = {name: factory for name, factory in prior_factories.items() if name != "chronos"}
 
         robustness_result = run_multi_prior_robustness(
             train_series,

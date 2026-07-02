@@ -161,6 +161,7 @@ Both functions optimize on a chronological holdout extracted from the training s
 - LSTM and CNN direct forecasters;
 - NLinear and DLinear;
 - ARKAN;
+- Chronos zero-shot forecasts through a lazy optional adapter;
 - externally supplied models through `CallableBaseline`.
 
 ```python
@@ -179,6 +180,27 @@ baseline_results, baseline_table = run_baseline_suite(
     },
     val_size=12,
     seed=42,
+)
+```
+
+Chronos can be evaluated with a notebook mock, a custom callable, or the
+optional `chronos-forecasting` package:
+
+```python
+from s3paper.baselines import evaluate_baseline
+
+chronos_output = evaluate_baseline(
+    "Chronos",
+    train_series,
+    test_series,
+    {
+        # For reproducible CPU notebooks, pass a mock/factory:
+        # "model_or_factory": MockChronos,
+        #
+        # For real Chronos, install requirements-optional.txt and choose:
+        "model_id": "amazon/chronos-bolt-small",
+        "device_map": "cpu",
+    },
 )
 ```
 
@@ -258,10 +280,13 @@ from s3paper.multi_prior_robustness import (
 )
 
 prior_factories = default_prior_factories(
-    foundation_window=best_s3_params["foundation_window"]
+    foundation_window=best_s3_params["foundation_window"],
+    # Use the same callable pattern as the source notebook.
+    chronos_predict_fn=chronos_predict_fn,
 )
-# Prophet is optional; use the dependency-free priors in the core experiment.
-prior_factories = {k: v for k, v in prior_factories.items() if k in {"rolling", "ets"}}
+# Include Chronos for the source-notebook comparison; use {"rolling", "ets"}
+# instead when you want a dependency-free robustness run.
+prior_factories = {k: v for k, v in prior_factories.items() if k in {"rolling", "ets", "chronos"}}
 
 prior_results = run_multi_prior_robustness(
     train_series,
@@ -274,7 +299,7 @@ prior_results = run_multi_prior_robustness(
 )
 ```
 
-Custom foundation models, including Chronos-like models, can be supplied through `CallableAutoregressivePrior` without coupling the project to a particular external API.
+Custom foundation models, including TimesFM, Moirai, and TimeGPT-like models, can be supplied through `CallableAutoregressivePrior` without coupling the project to a particular external API.
 
 ## Reproducibility rules adopted by the project
 

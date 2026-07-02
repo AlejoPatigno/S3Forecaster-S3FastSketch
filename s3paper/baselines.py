@@ -20,6 +20,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.preprocessing import StandardScaler
 
+from .chronos import chronos_predict_fixed_horizon, make_chronos_predictor
 from .metrics import evaluate_forecast
 from .utils import (
     count_trainable_parameters,
@@ -834,11 +835,49 @@ class CallableBaseline(ForecastBaseline):
         return recursive_point_forecast(self.model_, self.series_, horizon)
 
 
+class ChronosBaseline(ForecastBaseline):
+    """Zero-shot Chronos baseline with optional custom/mock predictor support."""
+
+    def __init__(
+        self,
+        model_or_factory: Any = None,
+        predict_fn: Optional[Callable] = None,
+        model_id: str = "amazon/chronos-bolt-small",
+        device_map: str = "cpu",
+        torch_dtype: Any = None,
+        prediction_kwargs: Optional[dict] = None,
+    ):
+        self.model_or_factory = model_or_factory
+        self.predict_fn = predict_fn
+        self.chronos_kwargs = {
+            "model_id": model_id,
+            "device_map": device_map,
+            "torch_dtype": torch_dtype,
+            "prediction_kwargs": prediction_kwargs,
+        }
+
+    def fit(self, series: Any):
+        self.series_ = ensure_series(series)
+        self.model_ = make_chronos_predictor(
+            model_or_factory=self.model_or_factory,
+            predict_fn=self.predict_fn,
+            **self.chronos_kwargs,
+        )
+        return self
+
+    def predict(self, horizon: int):
+        return chronos_predict_fixed_horizon(self.model_, self.series_, horizon)
+
+    def trainable_parameter_count(self) -> int:
+        return 0
+
+
 BASELINE_ALIASES = {
     "KRR": "KernelRidge",
     "GPR": "GaussianProcess",
     "AutoReg": "AR",
     "Seasonal Naive": "SeasonalNaive",
+    "ChronosZeroShot": "Chronos",
 }
 
 
@@ -859,6 +898,7 @@ BASELINE_CLASSES = {
     "NLinear": lambda **p: TorchLinearBaseline("NLinear", **p),
     "DLinear": lambda **p: TorchLinearBaseline("DLinear", **p),
     "ARKAN": ARKANBaseline,
+    "Chronos": ChronosBaseline,
 }
 
 
@@ -1101,6 +1141,7 @@ def run_baseline_suite(
         "NLinear": 20,
         "DLinear": 20,
         "ARKAN": 15,
+        "Chronos": 1,
     }
     results, rows = {}, []
     for name, trials in trials_by_model.items():

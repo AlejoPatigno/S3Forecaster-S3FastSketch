@@ -9,6 +9,7 @@ from typing import Any, Callable, Optional
 import numpy as np
 import pandas as pd
 
+from .chronos import chronos_predict_fixed_horizon, make_chronos_predictor
 from .metrics import evaluate_forecast, seasonal_naive_scale
 from .s3_fastsketch import S3FastSketchForecaster
 from .s3_forecaster import S3Forecaster, SimpleFoundationProxy
@@ -153,7 +154,56 @@ class CallableAutoregressivePrior:
         )
 
 
-ChronosPrior = CallableAutoregressivePrior
+class ChronosPrior(CallableAutoregressivePrior):
+    """Chronos foundation prior for robustness experiments.
+
+    Pass ``predict_fn`` or ``model_or_factory`` for notebook/mock runs. If both
+    are omitted, the prior lazily loads chronos-forecasting through
+    ``ChronosZeroShotModel``.
+    """
+
+    def __init__(
+        self,
+        predict_fn: Optional[Callable] = None,
+        *,
+        model_or_factory: Any = None,
+        min_history: int = 24,
+        fallback: str = "seasonal_naive",
+        name: str = "chronos",
+        **chronos_kwargs: Any,
+    ):
+        predictor = make_chronos_predictor(
+            model_or_factory=model_or_factory,
+            predict_fn=predict_fn,
+            **chronos_kwargs,
+        )
+
+        def _predict(history, horizon):
+            return chronos_predict_fixed_horizon(predictor, history, horizon)
+
+        super().__init__(
+            _predict,
+            min_history=min_history,
+            fallback=fallback,
+            name=name,
+        )
+
+
+def make_chronos_prior(
+    predict_fn: Optional[Callable] = None,
+    *,
+    model_or_factory: Any = None,
+    min_history: int = 24,
+    fallback: str = "seasonal_naive",
+    **chronos_kwargs: Any,
+) -> ChronosPrior:
+    return ChronosPrior(
+        predict_fn=predict_fn,
+        model_or_factory=model_or_factory,
+        min_history=min_history,
+        fallback=fallback,
+        **chronos_kwargs,
+    )
 
 
 def evaluate_prior_only(
@@ -363,6 +413,10 @@ def run_multi_prior_robustness(
 def default_prior_factories(
     *,
     foundation_window: int = 6,
+    include_chronos: bool = False,
+    chronos_predict_fn: Optional[Callable] = None,
+    chronos_model_or_factory: Any = None,
+    chronos_kwargs: Optional[dict[str, Any]] = None,
     external_predictors: Optional[dict[str, Callable]] = None,
 ):
     factories = {
@@ -370,6 +424,13 @@ def default_prior_factories(
         "ets": lambda: ETSPrior(),
         "prophet": lambda: ProphetPrior(),
     }
+    if include_chronos or chronos_predict_fn is not None or chronos_model_or_factory is not None:
+        kwargs = dict(chronos_kwargs or {})
+        factories["chronos"] = lambda: ChronosPrior(
+            predict_fn=chronos_predict_fn,
+            model_or_factory=chronos_model_or_factory,
+            **kwargs,
+        )
     for name, predictor in (external_predictors or {}).items():
         factories[name] = lambda predictor=predictor, name=name: CallableAutoregressivePrior(
             predictor, name=name
