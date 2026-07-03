@@ -119,15 +119,29 @@ def append_series_value(series: pd.Series, value: float) -> pd.Series:
 def parse_forecast_output(pred_obj: Any) -> ForecastOutput:
     """Normalize arrays, Series, or forecast DataFrames.
 
-    Recognized point columns: pred, forecast, mean, median, yhat.
-    Recognized interval columns: lower/q0.05/p05 and upper/q0.95/p95.
+    Recognized point columns: pred, forecast, mean, median, yhat,
+    predictions, prediction, and common median quantile names.
+    Recognized interval columns: lower/q0.05/p05/0.05/0.1 and
+    upper/q0.95/p95/0.95/0.9.
     """
 
     if isinstance(pred_obj, pd.DataFrame):
         colmap = {str(c).lower(): c for c in pred_obj.columns}
-        point_names = ("pred", "forecast", "mean", "median", "yhat")
-        lower_names = ("lower", "q0.05", "p05", "0.05")
-        upper_names = ("upper", "q0.95", "p95", "0.95")
+        point_names = (
+            "pred",
+            "forecast",
+            "mean",
+            "median",
+            "yhat",
+            "predictions",
+            "prediction",
+            "0.5",
+            "q0.5",
+            "q50",
+            "p50",
+        )
+        lower_names = ("lower", "q0.05", "p05", "0.05", "q0.1", "p10", "0.1")
+        upper_names = ("upper", "q0.95", "p95", "0.95", "q0.9", "p90", "0.9")
         pcol = next((colmap[n] for n in point_names if n in colmap), None)
         lcol = next((colmap[n] for n in lower_names if n in colmap), None)
         ucol = next((colmap[n] for n in upper_names if n in colmap), None)
