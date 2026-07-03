@@ -57,6 +57,24 @@ class MockChronos:
         return pd.Series(np.repeat(last, horizon), index=index)
 
 
+class MockChronosPredictDF:
+    def predict(self, history, horizon=1):
+        last = float(history.iloc[-1])
+        index = pd.date_range(history.index[-1], periods=horizon + 1, freq="ME")[1:]
+        values = np.repeat(last, horizon)
+        return pd.DataFrame(
+            {
+                "id": "series",
+                "timestamp": index,
+                "target_name": "target",
+                "predictions": values,
+                "0.1": values - 1.0,
+                "0.5": values,
+                "0.9": values + 1.0,
+            }
+        )
+
+
 def test_required_analysis_sections_execute():
     train, test = _experiment_data()
     s3, fast = _params()
@@ -139,3 +157,17 @@ def test_chronos_baseline_and_prior_execute_with_mock():
     )
     assert set(result["summary"]["prior"]) == {"chronos"}
     assert set(result["summary"]["status"]) == {"ok"}
+
+
+def test_chronos_predict_df_output_shape_is_supported():
+    train, test = _experiment_data()
+
+    baseline = evaluate_baseline(
+        "Chronos",
+        train,
+        test,
+        {"model_or_factory": MockChronosPredictDF},
+    )
+
+    assert len(baseline["forecast"]) == len(test)
+    assert np.isfinite(baseline["metrics"]["rmse"])
