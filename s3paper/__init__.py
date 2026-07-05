@@ -13,6 +13,7 @@ from .metrics import (
 from .residual_analysis import (
     analyze_forecast_residuals,
     analyze_prior_residuals,
+    plot_causal_volatility_diagnosis,
     plot_residual_diagnostics,
     residual_diagnostics,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "residual_diagnostics",
     "analyze_prior_residuals",
     "analyze_forecast_residuals",
+    "plot_causal_volatility_diagnosis",
     "plot_residual_diagnostics",
 ]
 

@@ -193,3 +193,98 @@ def plot_residual_diagnostics(
         figures["residuals_vs_fitted"] = fig_scatter
 
     return figures
+
+
+def plot_causal_volatility_diagnosis(
+    residuals: Any,
+    *,
+    model: Optional[Any] = None,
+    volatility_z: Optional[Any] = None,
+    gate: Optional[Any] = None,
+    span: int = 4,
+    figsize=(11, 6),
+    font_size: int = 16,
+    tick_size: int = 14,
+    show_axis_labels: bool = True,
+    show_legend: bool = True,
+    save_path: Optional[str] = None,
+):
+    """Plot causal volatility and optional gate paths for residual diagnostics."""
+
+    import matplotlib.pyplot as plt
+
+    residual_array = np.asarray(residuals, dtype=float).reshape(-1)
+    finite = np.isfinite(residual_array)
+    residual_array = residual_array[finite]
+    if len(residual_array) == 0:
+        raise ValueError("At least one finite residual is required.")
+
+    if volatility_z is None:
+        volatility = (
+            pd.Series(residual_array)
+            .ewm(span=int(span))
+            .std()
+            .fillna(0.0)
+            .to_numpy()
+        )
+        median = float(np.median(volatility))
+        iqr = float(np.percentile(volatility, 75) - np.percentile(volatility, 25))
+        volatility_z = (volatility - median) / ((iqr + 1e-6) / 1.35)
+    else:
+        volatility_z = np.asarray(volatility_z, dtype=float).reshape(-1)
+        volatility_z = volatility_z[np.isfinite(volatility_z)]
+
+    if gate is None and model is not None:
+        if hasattr(model, "_get_gate") and hasattr(model, "gate_alpha") and hasattr(model, "gate_beta"):
+            try:
+                gate = model._get_gate(residual_array, model.gate_alpha, model.gate_beta)
+            except Exception:
+                gate = None
+
+    if gate is not None:
+        gate = np.asarray(gate, dtype=float).reshape(-1)
+        gate = gate[np.isfinite(gate)]
+
+    x_vol = np.arange(len(volatility_z))
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.plot(x_vol, volatility_z, linewidth=2.4, label="Volatility z")
+    ax.axhline(0.0, linewidth=1.2, color="#444444", alpha=0.7)
+
+    if gate is not None and len(gate):
+        ax_gate = ax.twinx()
+        x_gate = np.arange(len(gate))
+        ax_gate.plot(x_gate, gate, linewidth=2.2, linestyle="--", color="#F58518", label="Gate")
+        ax_gate.tick_params(axis="y", labelsize=tick_size)
+        if show_axis_labels:
+            ax_gate.set_ylabel("Gate", fontsize=font_size)
+        else:
+            ax_gate.set_ylabel("")
+    else:
+        ax_gate = None
+
+    if show_axis_labels:
+        ax.set_xlabel("Time", fontsize=font_size)
+        ax.set_ylabel("Causal volatility z", fontsize=font_size)
+    else:
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+
+    ax.tick_params(axis="both", labelsize=tick_size)
+    ax.grid(alpha=0.25)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    if ax_gate is not None:
+        ax_gate.spines["top"].set_visible(False)
+
+    if show_legend:
+        handles, labels = ax.get_legend_handles_labels()
+        if ax_gate is not None:
+            right_handles, right_labels = ax_gate.get_legend_handles_labels()
+            handles += right_handles
+            labels += right_labels
+        ax.legend(handles, labels, fontsize=max(10, font_size - 4), frameon=False)
+
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+    return fig, (ax, ax_gate) if ax_gate is not None else ax
