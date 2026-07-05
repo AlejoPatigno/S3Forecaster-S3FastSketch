@@ -242,6 +242,12 @@ def plot_data_efficiency_curves(
     metric: str = "rmse",
     model_order: Optional[list[str]] = None,
     figsize=(10, 6),
+    font_size: int = 16,
+    tick_size: int = 14,
+    line_width: float = 2.4,
+    marker_size: float = 7.0,
+    show_axis_labels: bool = False,
+    show_legend: bool = False,
     save_path: Optional[str] = None,
 ):
     import matplotlib.pyplot as plt
@@ -252,11 +258,26 @@ def plot_data_efficiency_curves(
     for model_name in model_order:
         subset = valid[valid["model_name"] == model_name].sort_values("history_size")
         if len(subset):
-            ax.plot(subset["history_size"], subset[metric], marker="o", label=model_name)
-    ax.set_xlabel("Available history (N)")
-    ax.set_ylabel(metric.upper())
-    ax.legend()
+            ax.plot(
+                subset["history_size"],
+                subset[metric],
+                marker="o",
+                linewidth=line_width,
+                markersize=marker_size,
+                label=model_name,
+            )
+    if show_axis_labels:
+        ax.set_xlabel("Available history (N)", fontsize=font_size)
+        ax.set_ylabel(metric.upper(), fontsize=font_size)
+    else:
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+    ax.tick_params(axis="both", labelsize=tick_size)
+    if show_legend:
+        ax.legend(fontsize=max(10, font_size - 4), frameon=False)
     ax.grid(alpha=0.3)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
     fig.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=300, bbox_inches="tight")

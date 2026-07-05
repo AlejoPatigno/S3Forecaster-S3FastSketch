@@ -410,6 +410,71 @@ def run_multi_prior_robustness(
     return {"summary": summary, "forecasts": forecasts, "models": models}
 
 
+def plot_multi_prior_transferability(
+    summary: pd.DataFrame,
+    metric: str,
+    *,
+    figsize=(12, 6),
+    font_size: int = 16,
+    tick_size: int = 14,
+    show_axis_labels: bool = False,
+    show_legend: bool = False,
+    color_map: Optional[dict[str, str]] = None,
+    save_path: Optional[str] = None,
+):
+    """Plot multi-prior transferability bars with a clean no-text default."""
+
+    import matplotlib.pyplot as plt
+
+    valid = summary[
+        (summary["status"] == "ok")
+        & summary[metric].notna()
+        & np.isfinite(summary[metric])
+    ].copy()
+    pivot = valid.pivot_table(
+        index="prior",
+        columns="model",
+        values=metric,
+        aggfunc="first",
+    )
+
+    colors = None
+    if color_map:
+        mapped_colors = [color_map.get(str(column)) for column in pivot.columns]
+        if all(color is not None for color in mapped_colors):
+            colors = mapped_colors
+
+    fig, ax = plt.subplots(figsize=figsize)
+    pivot.plot(kind="bar", ax=ax, color=colors)
+
+    if show_axis_labels:
+        ax.set_xlabel("Foundation prior", fontsize=font_size)
+        ax.set_ylabel(metric.replace("_", " ").upper(), fontsize=font_size)
+    else:
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+
+    ax.tick_params(axis="both", labelsize=tick_size)
+    ax.tick_params(axis="x", rotation=0)
+    ax.grid(axis="y", alpha=0.25)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    legend = ax.get_legend()
+    if show_legend:
+        if legend is not None:
+            legend.set_title("")
+            for text in legend.get_texts():
+                text.set_fontsize(max(10, font_size - 4))
+    elif legend is not None:
+        legend.remove()
+
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+    return pivot, fig, ax
+
+
 def default_prior_factories(
     *,
     foundation_window: int = 6,

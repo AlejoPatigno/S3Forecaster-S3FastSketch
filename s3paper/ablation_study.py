@@ -18,6 +18,45 @@ from .metrics import evaluate_forecast
 from .s3_fastsketch import S3FastSketchForecaster, _make_forecast_index
 from .utils import count_trainable_parameters, ensure_series
 
+
+ABLATION_SHORT_LABELS = {
+    "base only": "Base",
+    "base + residual adapter": "Base + residual",
+    "base + residual + gate": "Base + gate",
+    "full model + ACI": "Full + ACI",
+    "full model + static conformal": "Full static",
+    "Full": "Full",
+    "Without foundation": "No foundation",
+    "Without AR lags": "No AR",
+    "Without EMA residual": "No EMA",
+    "Without volatility": "No volatility",
+    "Without momentum": "No momentum",
+    "Without causal convolutions": "No causal conv.",
+    "Without seasonal residual": "No seasonal",
+    "Without calendar features": "No calendar",
+    "Without fast sketch core": "No sketch core",
+}
+
+
+def shorten_ablation_label(label: Any, max_chars: int = 22) -> str:
+    """Return a compact label for ablation bar charts."""
+
+    text = str(label)
+    text = ABLATION_SHORT_LABELS.get(text, text)
+    replacements = {
+        "Without ": "No ",
+        " residual": "",
+        " features": "",
+        "convolutions": "conv.",
+        "adapter": "adapt.",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    if len(text) > max_chars:
+        return text[: max_chars - 1].rstrip() + "."
+    return text
+
+
 class SimpleFoundationProxyAblation:
     def __init__(self, window_size=6):
         self.window_size = window_size
@@ -387,6 +426,54 @@ def plot_s3_ablation_forecasts(train_series, test_series, forecasts, last_histor
 
     plt.tight_layout()
     plt.show()
+
+
+def plot_componentwise_ablation_bars(
+    table: pd.DataFrame,
+    metric: str,
+    *,
+    label_column: str = "variant",
+    status_column: str = "status",
+    figsize=(11, 6),
+    font_size: int = 16,
+    tick_size: int = 14,
+    label_max_chars: int = 22,
+    color: str = "#4C78A8",
+    show_axis_labels: bool = True,
+    save_path: Optional[str] = None,
+):
+    """Plot readable component-wise ablation bars with compact variant names."""
+
+    import matplotlib.pyplot as plt
+
+    valid = table.copy()
+    if status_column in valid.columns:
+        valid = valid[valid[status_column] == "ok"]
+    valid = valid[valid[metric].notna() & np.isfinite(valid[metric])].copy()
+    valid["_label"] = valid[label_column].map(
+        lambda value: shorten_ablation_label(value, max_chars=label_max_chars)
+    )
+    valid = valid.sort_values(metric, ascending=True)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.barh(valid["_label"], valid[metric].astype(float), color=color)
+
+    if show_axis_labels:
+        ax.set_xlabel(metric.replace("_", " ").upper(), fontsize=font_size)
+        ax.set_ylabel("Component", fontsize=font_size)
+    else:
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+
+    ax.tick_params(axis="both", labelsize=tick_size)
+    ax.grid(axis="x", alpha=0.25)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+    return fig, ax
 
 class ZeroFoundation:
     """Zero prior for the 'Without foundation' ablation."""
