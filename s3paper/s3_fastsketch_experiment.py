@@ -168,6 +168,7 @@ def optimize_fastsketch_uq(
     seasonal_period: int = 12,
     penalty_strength: float = 100.0,
     seed: int = 42,
+    optimize_nominal_level: bool = False,
 ):
     """Optimize UQ on a validation block; the test set is never accessed."""
 
@@ -178,9 +179,14 @@ def optimize_fastsketch_uq(
         {key: value for key, value in point_params.items() if key in POINT_KEYS}
     )
     point_params, _, _ = split_model_prior_params(point_params)
+    fixed_alpha = 1.0 - float(target_coverage)
 
     def objective(trial: optuna.Trial) -> float:
-        aci_target = trial.suggest_float("aci_target", 0.01, 0.20)
+        aci_target = (
+            trial.suggest_float("aci_target", 0.01, 0.20)
+            if optimize_nominal_level
+            else fixed_alpha
+        )
         aci_step_size = trial.suggest_float("aci_step_size", 0.005, 0.20, log=True)
         interval_scale = trial.suggest_float("interval_scale", 0.75, 8.0, log=True)
         interval_power = 0.0
@@ -196,6 +202,8 @@ def optimize_fastsketch_uq(
                 min_calib_samples=2,
                 **point_params,
             )
+            trial.set_user_attr("requested_nominal_coverage", target_coverage)
+            trial.set_user_attr("effective_target_coverage", 1.0 - aci_target)
             minimum_width = min_width_factor * seasonal_naive_scale(
                 train, seasonal_period=seasonal_period
             )
@@ -257,7 +265,7 @@ def evaluate_fastsketch(
     model = S3FastSketchForecaster(
         horizon=1,
         seasonal_period=seasonal_period,
-        aci_target=float(uq.get("aci_target", alpha)),
+        aci_target=float(uq.get("aci_target", alpha)) if bool(uq.get("optimize_nominal_level", False)) else float(alpha),
         aci_step_size=float(uq.get("aci_step_size", 0.05)),
         min_train_samples=6,
         min_calib_samples=2,

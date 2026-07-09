@@ -56,11 +56,29 @@ def mase(y_true: Any, y_pred: Any, y_train: Any, seasonal_period: int = 12) -> f
     return float(np.mean(np.abs(yt - yp)) / scale)
 
 
+def mase_from_scale(y_true: Any, y_pred: Any, scale: float) -> float:
+    yt = to_1d_array(y_true)
+    yp = to_1d_array(y_pred)
+    denominator = float(scale)
+    if not np.isfinite(denominator) or denominator <= 1e-12:
+        denominator = 1.0
+    return float(np.mean(np.abs(yt - yp)) / denominator)
+
+
 def rmsse(y_true: Any, y_pred: Any, y_train: Any, seasonal_period: int = 12) -> float:
     yt = to_1d_array(y_true)
     yp = to_1d_array(y_pred)
     scale = seasonal_naive_squared_scale(y_train, seasonal_period=seasonal_period)
     return float(np.sqrt(np.mean((yt - yp) ** 2) / scale))
+
+
+def rmsse_from_scale(y_true: Any, y_pred: Any, scale: float) -> float:
+    yt = to_1d_array(y_true)
+    yp = to_1d_array(y_pred)
+    denominator = float(scale)
+    if not np.isfinite(denominator) or denominator <= 1e-12:
+        denominator = 1.0
+    return float(np.sqrt(np.mean((yt - yp) ** 2) / denominator))
 
 
 def wape(y_true: Any, y_pred: Any, eps: float = 1e-8, percentage: bool = True) -> float:
@@ -134,6 +152,7 @@ def interval_metrics(
     *,
     alpha: float = 0.10,
     seasonal_period: int = 12,
+    msis_scale_value: float | None = None,
 ) -> dict[str, float]:
     yt = to_1d_array(y_true)
     lo = to_1d_array(lower)
@@ -142,7 +161,13 @@ def interval_metrics(
 
     covered = (yt >= lo) & (yt <= up)
     scores = interval_score_per_t(yt, lo, up, alpha=alpha)
-    scale = seasonal_naive_scale(y_train, seasonal_period=seasonal_period)
+    scale = (
+        seasonal_naive_scale(y_train, seasonal_period=seasonal_period)
+        if msis_scale_value is None
+        else float(msis_scale_value)
+    )
+    if not np.isfinite(scale) or scale <= 1e-12:
+        scale = 1.0
     ecp = float(np.mean(covered))
 
     return {
@@ -169,37 +194,39 @@ def evaluate_forecast(
     eps: float = 1e-5,
     elapsed_seconds: Optional[float] = None,
     trainable_params: Optional[int] = None,
+    mase_scale_value: Optional[float] = None,
+    rmsse_scale_value: Optional[float] = None,
+    msis_scale_value: Optional[float] = None,
 ) -> dict[str, float]:
     result = point_metrics(y_true, y_pred, eps=eps)
     result["wape_percent"] = wape(y_true, y_pred, eps=eps, percentage=True)
     result["wape"] = wape(y_true, y_pred, eps=eps, percentage=False)
-    if y_train is not None:
-        result["mase"] = mase(
-            y_true,
-            y_pred,
-            y_train,
-            seasonal_period=seasonal_period,
+    if y_train is not None or mase_scale_value is not None:
+        result["mase"] = (
+            mase_from_scale(y_true, y_pred, mase_scale_value)
+            if mase_scale_value is not None
+            else mase(y_true, y_pred, y_train, seasonal_period=seasonal_period)
         )
-        result["rmsse"] = rmsse(
-            y_true,
-            y_pred,
-            y_train,
-            seasonal_period=seasonal_period,
+        result["rmsse"] = (
+            rmsse_from_scale(y_true, y_pred, rmsse_scale_value)
+            if rmsse_scale_value is not None
+            else rmsse(y_true, y_pred, y_train, seasonal_period=seasonal_period)
         )
     else:
         result["mase"] = np.nan
         result["rmsse"] = np.nan
     if lower is not None and upper is not None:
-        if y_train is None:
+        if y_train is None and msis_scale_value is None:
             raise ValueError("y_train is required to calculate MSIS.")
         result.update(
             interval_metrics(
                 y_true,
                 lower,
                 upper,
-                y_train,
+                [] if y_train is None else y_train,
                 alpha=alpha,
                 seasonal_period=seasonal_period,
+                msis_scale_value=msis_scale_value,
             )
         )
     else:

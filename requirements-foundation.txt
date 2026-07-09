@@ -1,0 +1,4 @@
+# Optional foundation priors.
+chronos-forecasting>=2.3
+# TimesFM package availability depends on the upstream distribution used by the runner.
+timesfm>=1.0

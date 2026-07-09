@@ -501,6 +501,21 @@ def normalize_prior_name(prior_name: str) -> str:
     return "causal_rolling_mean" if prior_name == "rolling_mean" else str(prior_name)
 
 
+def available_prior_names(include_optional: bool = False) -> tuple[str, ...]:
+    names = list(MANDATORY_PRIOR_NAMES)
+    if include_optional:
+        for name in OPTIONAL_PRIOR_NAMES:
+            try:
+                if name == "chronos":
+                    import chronos  # noqa: F401
+                elif name == "timesfm":
+                    import timesfm  # noqa: F401
+                names.append(name)
+            except Exception:
+                continue
+    return tuple(names)
+
+
 def prior_params_from_namespace(params: dict[str, Any]) -> dict[str, Any]:
     prior_name = normalize_prior_name(params.get("prior_name", "causal_rolling_mean"))
     out: dict[str, Any] = {}

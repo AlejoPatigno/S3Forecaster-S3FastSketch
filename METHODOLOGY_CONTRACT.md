@@ -49,6 +49,14 @@ gamma = clip(sum(rhat * r) / (sum(rhat^2) + eps), 0, gamma_max)
 
 Signed contraction is available only through `signed_shrinkage=True`.
 
+Both proposed models split the pretest training series into three chronological internal blocks:
+
+```text
+readout_train -> adapter_calibration -> conformal_calibration
+```
+
+Readouts and feature scalers are fitted only on `readout_train`. Gate, contraction, and adapter selector are fitted only on `adapter_calibration`. `SequentialACI` conformity scores are fitted only on `conformal_calibration`.
+
 ## Rolling Protocol
 
 The shared evaluator is `s3paper/rolling_evaluation.py`; `s3paper/rolling_protocol.py` remains a compatibility wrapper.
@@ -64,10 +72,22 @@ For each test timestamp:
 
 `SequentialACI` generates intervals before observing the new target. It uses a finite-sample conformal order statistic and updates both score history and `alpha_t` after target reveal.
 
+The interval passed to `SequentialACI.update()` must be the same interval reported in the forecast row.
+
 ## Metrics
 
-All metrics are computed on the supplied original-scale arrays. MSIS denominators use training data only through `seasonal_naive_scale`.
+All metrics are computed on the supplied original-scale arrays. MASE, RMSSE, and MSIS denominators use training data only. When metrics are derived from the canonical result store, precomputed train-only scales (`mase_scale`, `rmsse_scale`, `msis_scale`) are used; test targets are never used to reconstruct denominators.
+
+## HPO Scope
+
+The prior is part of the joint HPO search for both proposed models. Temporal HPO must use development folds only; final test observations must not influence priors, hyperparameters, transforms, gates, contraction, selectors, or intervals.
+
+The primary UQ objective keeps nominal coverage fixed (`target_miscoverage = alpha`). Optimizing the nominal level is allowed only when explicitly requested with `optimize_nominal_level=True` and should be reported as supplemental.
+
+## Result Store
+
+The canonical result store is one row per forecast origin. It records run identifiers, git commit, dataset, series, split, model, prior parameters, model/UQ parameters, train-only scales, internal block sizes, hashes, information cutoff, target timestamp, prediction, interval, adapter activation, runtime, status, and error. Paper tables and figures must be derived from this store.
 
 ## Known Limits
 
-This local repair did not execute full Kaggle benchmark runs, regenerate paper tables, or reconcile legacy empirical values. Those tasks remain blocked on dataset/runtime execution, not on package import or local unit tests.
+This local repair did not execute dataset notebooks, Kaggle benchmark runs, regenerate paper tables, or reconcile legacy empirical values. Those tasks remain blocked on dataset/runtime execution, not on package import or local unit tests.

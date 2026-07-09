@@ -15,6 +15,7 @@ from s3paper.result_store import (
 from s3paper.rolling_evaluation import evaluate_rolling_model
 from s3paper.s3_fastsketch import S3FastSketchForecaster
 from s3paper.s3_forecaster import S3Forecaster
+from s3paper.s3_forecaster import S3Forecaster
 from s3paper.shock_analysis import (
     controlled_shock_metrics,
     inject_additive_spike,
@@ -84,13 +85,33 @@ def test_canonical_result_store_generation_and_statistics():
         model="S3-FastSketch",
         prior_name="causal_rolling_mean",
         seed=42,
+        seasonal_period=12,
+        requested_coverage=0.90,
+        effective_target_coverage=0.90,
+        model_status=model.summary(),
     )
 
     assert set(REQUIRED_RESULT_COLUMNS).issubset(store.columns)
+    for column in ("mase_scale", "rmsse_scale", "msis_scale", "config_hash", "data_hash", "n_train"):
+        assert column in store
     assert validate_result_store(store).equals(store)
     metrics = per_series_metrics_from_store(store)
+    direct = evaluate_forecast(
+        test,
+        evaluation["forecast"]["pred"],
+        y_train=train,
+        lower=evaluation["forecast"]["lower"],
+        upper=evaluation["forecast"]["upper"],
+        seasonal_period=12,
+    )
     assert len(metrics) == 1
     assert np.isfinite(metrics["mase"].iloc[0])
+    assert np.isclose(metrics["mase"].iloc[0], direct["mase"])
+    assert np.isclose(metrics["rmsse"].iloc[0], direct["rmsse"])
+    assert np.isclose(metrics["msis"].iloc[0], direct["msis"])
+    perturbed = store.copy()
+    perturbed["y_true"] = perturbed["y_true"] + 1000.0
+    assert np.allclose(perturbed["mase_scale"], store["mase_scale"])
 
     doubled = store.copy()
     doubled["model"] = "Naive"
@@ -213,3 +234,35 @@ def test_ablation_flags_disable_intended_components():
     assert "ar" in fast["models"]["no AR"].disabled_groups
     assert fast["models"]["no contraction"].use_shrinkage is False
     assert fast["models"]["no adapter selector"].use_adapter_selector is False
+
+
+def test_internal_blocks_are_disjoint_and_reported_interval_updates_aci():
+    y = _series(84)
+    train = y.iloc[:-6]
+    model = S3Forecaster(
+        reservoir_size=8,
+        ar_lags=2,
+        prior_name="causal_rolling_mean",
+        prior_params={"window_size": 6},
+        calibration_split_ratio=0.65,
+    ).fit(train)
+    report = model.fit_report_
+    assert report["readout_end"] < report["adapter_start"]
+    assert report["adapter_end"] < report["conformal_start"]
+    assert report["n_conformal_calibration"] == len(model.conformity_scores)
+
+    row = model.predict_one()
+    before_alpha = model.current_alpha_t
+    pred = float(row["pred"].iloc[0])
+    interval = (float(row["lower"].iloc[0]), float(row["upper"].iloc[0]))
+    observation = interval[1] + 10.0
+    model.update(observation)
+    assert model.current_alpha_t < before_alpha
+    assert model.conformity_scores[-1] == abs(observation - pred)
+
+
+def test_s3_gate_is_contracting_in_volatility():
+    model = S3Forecaster().fit(_series(84))
+    model.gate_alpha_ = 1.0
+    model.gate_beta_ = 0.0
+    assert model._gate(2.0) < model._gate(-2.0)

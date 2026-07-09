@@ -14,6 +14,7 @@ from .metrics import (
     wape,
 )
 from .conformal import SequentialACI, finite_sample_quantile
+from .calibration import InternalCalibrationSplit, split_internal_calibration
 from .preprocessing import FrozenRobustScaler, IdentityTransformer, PositiveLogTransformer
 from .priors import (
     MANDATORY_PRIOR_NAMES,
@@ -26,6 +27,7 @@ from .priors import (
     SeasonalNaivePrior,
     ThetaPrior,
     TimesFMPrior,
+    available_prior_names,
     build_prior,
     split_model_prior_params,
 )
@@ -38,14 +40,26 @@ from .residual_analysis import (
 )
 from .rolling_evaluation import evaluate_rolling_model, rolling_one_step_forecast
 from .selection import AdapterSelectionRule, residual_predictability_score, select_family
+from .prior_cache import PriorForecastCache
+from .temporal_cv import aggregate_scores, make_expanding_window_folds
 from .result_store import (
     REQUIRED_RESULT_COLUMNS,
+    assert_unique_metric_source,
+    export_paper_tables,
     per_series_metrics_from_store,
     result_rows_from_forecast,
     save_result_store,
     validate_result_store,
 )
 from .diagnostics import diagnostics_frame, series_diagnostics
+from .statistical_analysis import (
+    critical_difference_data,
+    diebold_mariano_hln,
+    friedman_test,
+    holm_corrected_pairwise_test,
+    nemenyi_posthoc,
+    paired_bootstrap_difference,
+)
 from .s3_forecaster import (
     EchoStateFeatureExtractor,
     S3Forecaster,
@@ -72,6 +86,7 @@ __all__ = [
     "MANDATORY_PRIOR_NAMES",
     "OPTIONAL_PRIOR_NAMES",
     "PRIOR_REGISTRY",
+    "available_prior_names",
     "build_prior",
     "split_model_prior_params",
     "FrozenRobustScaler",
@@ -79,9 +94,14 @@ __all__ = [
     "PositiveLogTransformer",
     "SequentialACI",
     "finite_sample_quantile",
+    "InternalCalibrationSplit",
+    "split_internal_calibration",
     "AdapterSelectionRule",
     "residual_predictability_score",
     "select_family",
+    "PriorForecastCache",
+    "make_expanding_window_folds",
+    "aggregate_scores",
     "evaluate_rolling_model",
     "rolling_one_step_forecast",
     "ChronosZeroShotModel",
@@ -102,8 +122,16 @@ __all__ = [
     "validate_result_store",
     "save_result_store",
     "per_series_metrics_from_store",
+    "assert_unique_metric_source",
+    "export_paper_tables",
     "series_diagnostics",
     "diagnostics_frame",
+    "friedman_test",
+    "nemenyi_posthoc",
+    "holm_corrected_pairwise_test",
+    "paired_bootstrap_difference",
+    "diebold_mariano_hln",
+    "critical_difference_data",
     "residual_diagnostics",
     "analyze_prior_residuals",
     "analyze_forecast_residuals",

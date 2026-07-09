@@ -332,6 +332,69 @@ def controlled_shock_metrics(
     }
 
 
+def run_controlled_shock_benchmark(
+    model_factory,
+    train_series: Any,
+    clean_test_series: Any,
+    shock_configurations: list[dict[str, Any]],
+    *,
+    seasonal_period: int = 12,
+    alpha: float = 0.10,
+) -> dict[str, Any]:
+    train = ensure_series(train_series, name="train")
+    clean_test = ensure_series(clean_test_series, name="test")
+    generators = {
+        "additive_spike": inject_additive_spike,
+        "temporary_pulse": inject_temporary_pulse,
+        "level_shift": inject_level_shift,
+        "variance_shift": inject_variance_shift,
+        "trend_shift": inject_trend_shift,
+        "seasonal_amplitude_shift": inject_seasonal_amplitude_shift,
+    }
+    rows, forecasts = [], {}
+    for idx, config in enumerate(shock_configurations):
+        kind = config.get("kind", "additive_spike")
+        if kind not in generators:
+            raise ValueError(f"Unknown shock kind {kind!r}.")
+        kwargs = {k: v for k, v in config.items() if k != "kind"}
+        shock = generators[kind](clean_test, **kwargs)
+        model = model_factory()
+        model.fit(train)
+        forecast_rows = []
+        information_cutoff = train.index[-1]
+        for timestamp, observed in shock["series"].items():
+            forecast = model.predict_one().copy()
+            forecast.index = pd.Index([timestamp])
+            forecast["target"] = float(observed)
+            forecast["forecast_origin"] = information_cutoff
+            forecast["information_cutoff"] = information_cutoff
+            forecast["target_timestamp"] = timestamp
+            forecast_rows.append(forecast)
+            model.update(float(observed))
+            information_cutoff = timestamp
+        forecast = pd.concat(forecast_rows) if forecast_rows else pd.DataFrame()
+        metrics = controlled_shock_metrics(
+            train,
+            shock["series"],
+            forecast,
+            event_start_position=shock["event_start_position"],
+            duration=shock["duration"],
+            seasonal_period=seasonal_period,
+            alpha=alpha,
+        )
+        row = {
+            "shock_id": idx,
+            "kind": kind,
+            "event_start": shock["event_start"],
+            "duration": shock["duration"],
+            "magnitude": shock["magnitude"],
+            **{k: v for k, v in metrics.items() if k not in {"gate_trajectory", "adapter_activation"}},
+        }
+        rows.append(row)
+        forecasts[idx] = forecast
+    return {"summary": pd.DataFrame(rows), "forecasts": forecasts}
+
+
 def run_s3_shock_analysis(
     train_series: Any,
     test_series: Any,

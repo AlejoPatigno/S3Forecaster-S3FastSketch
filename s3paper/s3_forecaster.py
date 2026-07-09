@@ -11,6 +11,7 @@ from scipy.optimize import minimize
 from sklearn.linear_model import BayesianRidge, ElasticNet, Lasso, Ridge
 from sklearn.multioutput import MultiOutputRegressor
 
+from .calibration import split_internal_calibration
 from .conformal import SequentialACI
 from .priors import (
     CausalPrior,
@@ -146,7 +147,7 @@ class S3Forecaster:
 
     def _gate(self, z_value: float) -> float:
         logits = np.clip(self.gate_alpha_ * (float(z_value) - self.gate_beta_), -50.0, 50.0)
-        return float(1.0 / (1.0 + np.exp(-logits)))
+        return float(1.0 / (1.0 + np.exp(logits)))
 
     def create_features(self, residuals: Any) -> np.ndarray:
         x_all = self.transformer.transform(residuals)
@@ -203,24 +204,31 @@ class S3Forecaster:
     def fit(self, series: Any):
         y = ensure_series(series)
         n = len(y)
-        min_required = self.ar_lags + 8
-        split_index = int(np.clip(int(n * self.calibration_split_ratio), self.ar_lags + 4, n - 2))
         self.fit_report_ = {
             "n": int(n),
-            "split_index": int(split_index),
             "horizon": int(self.horizon),
             "status": "initializing",
             "prior_name": self.prior_name,
         }
         self.fitted = False
-        if n < min_required or split_index <= self.ar_lags + 2:
-            self.fit_report_["status"] = "insufficient_data"
+        try:
+            split = split_internal_calibration(
+                y,
+                readout_ratio=self.calibration_split_ratio,
+                adapter_ratio=0.20,
+                minimum_readout=self.ar_lags + 8,
+                minimum_adapter=3,
+                minimum_conformal=3,
+            )
+        except ValueError as exc:
+            self.fit_report_["status"] = str(exc)
             return self
 
-        train_block = y.iloc[:split_index]
-        calibration_block = y.iloc[split_index:]
-        train_prior = self._make_prior().fit(train_block)
-        train_residual = train_block.to_numpy(dtype=float) - train_prior.fitted_values().to_numpy(dtype=float)
+        readout_block = split.readout_train
+        adapter_block = split.adapter_calibration
+        conformal_block = split.conformal_calibration
+        train_prior = self._make_prior().fit(readout_block)
+        train_residual = readout_block.to_numpy(dtype=float) - train_prior.fitted_values().to_numpy(dtype=float)
 
         self.transformer.fit(train_residual)
         x_train = self.create_features(train_residual)
@@ -235,52 +243,55 @@ class S3Forecaster:
         self.readout.fit(x_train[valid], y_train[valid].reshape(-1, 1))
         self.volatility_scaler_.fit(self._volatility(train_residual))
 
-        if len(calibration_block) > 0:
-            base_cal, raw_cal, target_resid_cal, z_cal = self._calibration_predictions(
-                train_block,
-                calibration_block,
-            )
+        base_cal, raw_cal, target_resid_cal, z_cal = self._calibration_predictions(
+            readout_block,
+            adapter_block,
+        )
 
-            def gate_loss(params: np.ndarray) -> float:
-                alpha, beta = params
-                logits = np.clip(float(alpha) * (z_cal - float(beta)), -50.0, 50.0)
-                gate = 1.0 / (1.0 + np.exp(-logits))
-                return float(np.mean(np.abs(target_resid_cal - raw_cal * gate)))
+        def gate_loss(params: np.ndarray) -> float:
+            alpha, beta = params
+            logits = np.clip(float(alpha) * (z_cal - float(beta)), -50.0, 50.0)
+            gate = 1.0 / (1.0 + np.exp(logits))
+            return float(np.mean(np.abs(target_resid_cal - raw_cal * gate)))
 
-            optimum = minimize(gate_loss, [1.0, 0.0], bounds=[(0.01, 20.0), (-5.0, 5.0)])
-            self.gate_alpha_, self.gate_beta_ = map(float, optimum.x)
-            if self.use_volatility_gate:
-                gate = 1.0 / (1.0 + np.exp(-np.clip(self.gate_alpha_ * (z_cal - self.gate_beta_), -50.0, 50.0)))
-            else:
-                gate = np.ones_like(raw_cal)
-            adapted = base_cal + raw_cal * gate
-            self.aci_ = SequentialACI(self.target_miscoverage, self.aci_step_size).fit_calibration(
-                calibration_block.to_numpy(dtype=float),
-                adapted,
-            )
-            prior_loss = float(np.mean(np.abs(calibration_block.to_numpy(dtype=float) - base_cal)))
-            adapted_loss = float(np.mean(np.abs(calibration_block.to_numpy(dtype=float) - adapted)))
-            r2_res_cal = residual_predictability_score(target_resid_cal, raw_cal)
-            self.selector_report_ = self.selection_rule.decide(
-                r2_res_cal=r2_res_cal,
-                delta_cal=prior_loss - adapted_loss,
-                prior_loss=prior_loss,
-                adapted_loss=adapted_loss,
-                reason_prefix="s3_calibration",
-            )
-            if not self.use_residual_adapter:
-                self.selector_report_["activated"] = False
-                self.selector_report_["reason"] = "adapter_disabled_by_ablation"
-            elif not self.use_adapter_selector:
-                self.selector_report_["activated"] = True
-                self.selector_report_["reason"] = "adapter_selector_disabled_by_ablation"
+        optimum = minimize(gate_loss, [1.0, 0.0], bounds=[(0.01, 20.0), (-5.0, 5.0)])
+        self.gate_alpha_, self.gate_beta_ = map(float, optimum.x)
+        if self.use_volatility_gate:
+            gate = 1.0 / (1.0 + np.exp(np.clip(self.gate_alpha_ * (z_cal - self.gate_beta_), -50.0, 50.0)))
         else:
-            self.gate_alpha_, self.gate_beta_ = 1.0, 0.0
-            self.aci_ = SequentialACI(self.target_miscoverage, self.aci_step_size)
-            self.selector_report_ = {
-                "activated": bool(self.use_residual_adapter),
-                "reason": "no_calibration_block",
-            }
+            gate = np.ones_like(raw_cal)
+        adapted = base_cal + raw_cal * gate
+        prior_loss = float(np.mean(np.abs(adapter_block.to_numpy(dtype=float) - base_cal)))
+        adapted_loss = float(np.mean(np.abs(adapter_block.to_numpy(dtype=float) - adapted)))
+        r2_res_cal = residual_predictability_score(target_resid_cal, raw_cal)
+        self.selector_report_ = self.selection_rule.decide(
+            r2_res_cal=r2_res_cal,
+            delta_cal=prior_loss - adapted_loss,
+            prior_loss=prior_loss,
+            adapted_loss=adapted_loss,
+            reason_prefix="s3_adapter_calibration",
+        )
+        if not self.use_residual_adapter:
+            self.selector_report_["activated"] = False
+            self.selector_report_["reason"] = "adapter_disabled_by_ablation"
+        elif not self.use_adapter_selector:
+            self.selector_report_["activated"] = True
+            self.selector_report_["reason"] = "adapter_selector_disabled_by_ablation"
+
+        base_conf, raw_conf, _, z_conf = self._calibration_predictions(
+            pd.concat([readout_block, adapter_block]),
+            conformal_block,
+        )
+        if self.use_volatility_gate:
+            gate_conf = 1.0 / (1.0 + np.exp(np.clip(self.gate_alpha_ * (z_conf - self.gate_beta_), -50.0, 50.0)))
+        else:
+            gate_conf = np.ones_like(raw_conf)
+        correction_conf = raw_conf * gate_conf if self.selector_report_.get("activated", False) else np.zeros_like(raw_conf)
+        adapted_conf = base_conf + correction_conf
+        self.aci_ = SequentialACI(self.target_miscoverage, self.aci_step_size).fit_calibration(
+            conformal_block.to_numpy(dtype=float),
+            adapted_conf,
+        )
 
         self.prior_ = self._make_prior().fit(y)
         self.last_series = y.copy()
@@ -289,9 +300,10 @@ class S3Forecaster:
             {
                 "status": "success",
                 "n_readout_samples": int(len(valid)),
-                "n_calibration_samples": int(len(calibration_block)),
+                "n_calibration_samples": int(len(adapter_block) + len(conformal_block)),
                 "n_features": int(x_train.shape[1]),
                 "achieved_spectral_radius": self.transformer.achieved_spectral_radius_,
+                **split.report(),
             }
         )
         self.fitted = True
@@ -311,7 +323,7 @@ class S3Forecaster:
         residual_correction = gate * raw if self.selector_report_.get("activated", False) else 0.0
         pred = float(base + residual_correction)
         lower, upper = self.aci_.interval(pred) if self.use_aci else (pred, pred)
-        self.last_prediction_ = {"base": base, "pred": pred, "raw": raw, "gate": gate}
+        self.last_prediction_ = {"base": base, "pred": pred, "raw": raw, "gate": gate, "lower": lower, "upper": upper}
         return pd.DataFrame(
             {
                 "base": [base],
@@ -328,7 +340,11 @@ class S3Forecaster:
 
     def update(self, observation: float):
         if self.last_prediction_ is not None:
-            self.aci_.update(float(observation), float(self.last_prediction_["pred"]))
+            self.aci_.update(
+                float(observation),
+                float(self.last_prediction_["pred"]),
+                interval=(float(self.last_prediction_["lower"]), float(self.last_prediction_["upper"])),
+            )
         self.prior_.update(float(observation))
         next_index = self.prior_.fitted_values().index[-1]
         self.last_series.loc[next_index] = float(observation)

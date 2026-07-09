@@ -8,3 +8,9 @@ outputs/
 kaggle/run_output*/
 kaggle/dataset_metadata_check/
 kaggle/source_dataset/
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.synctex
+*.synctex.gz

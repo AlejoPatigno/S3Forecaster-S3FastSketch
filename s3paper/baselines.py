@@ -21,7 +21,9 @@ from sklearn.multioutput import MultiOutputRegressor
 from sklearn.preprocessing import StandardScaler
 
 from .chronos import chronos_predict_fixed_horizon, make_chronos_predictor
+from .conformal import SequentialACI
 from .metrics import evaluate_forecast
+from .preprocessing import IdentityTransformer
 from .utils import (
     count_trainable_parameters,
     ensure_series,
@@ -83,6 +85,95 @@ class ForecastBaseline:
 
     def trainable_parameter_count(self) -> int:
         return count_trainable_parameters(getattr(self, "model_", None))
+
+
+class TransformedForecaster:
+    """Wrap a one-step forecaster with an invertible target transformation."""
+
+    def __init__(self, model: ForecastBaseline, transformer=None):
+        self.model = model
+        self.transformer = transformer or IdentityTransformer()
+
+    def fit(self, series: Any):
+        y = ensure_series(series)
+        self.series_ = y.copy()
+        self.transformer.fit(y.to_numpy(dtype=float))
+        transformed = pd.Series(self.transformer.transform(y.to_numpy(dtype=float)), index=y.index)
+        self.model.fit(transformed)
+        return self
+
+    def predict(self, horizon: int):
+        pred = ensure_series(self.model.predict(horizon))
+        values = self.transformer.inverse_transform(pred.to_numpy(dtype=float))
+        return pd.Series(values, index=make_future_index(self.series_, int(horizon)), name="pred")
+
+    def update(self, observation: float):
+        self.series_.loc[make_future_index(self.series_, 1)[0]] = float(observation)
+        return self.fit(self.series_)
+
+    def trainable_parameter_count(self) -> int:
+        return count_trainable_parameters(self.model)
+
+
+class ConformalizedBaseline:
+    """Common SequentialACI wrapper for baselines."""
+
+    def __init__(
+        self,
+        model_name: str,
+        params: dict[str, Any] | None = None,
+        *,
+        alpha: float = 0.10,
+        aci_step_size: float = 0.05,
+        interval_scale: float = 1.0,
+        minimum_width: float = 0.0,
+    ):
+        self.model_name = model_name
+        self.params = dict(params or {})
+        self.alpha = float(alpha)
+        self.aci_step_size = float(aci_step_size)
+        self.interval_scale = float(interval_scale)
+        self.minimum_width = float(minimum_width)
+        self.aci_ = SequentialACI(self.alpha, self.aci_step_size)
+
+    def fit(self, series: Any):
+        y = ensure_series(series)
+        if len(y) < 12:
+            self.history_ = y.copy()
+            self.aci_ = SequentialACI(self.alpha, self.aci_step_size)
+            return self
+        split = max(6, int(0.75 * len(y)))
+        split = min(split, len(y) - 3)
+        history = y.iloc[:split].copy()
+        preds, truth = [], []
+        for _, observed in y.iloc[split:].items():
+            _, one = fit_predict_baseline(self.model_name, history, 1, self.params)
+            pred = float(parse_forecast_output(one).pred[0])
+            preds.append(pred)
+            truth.append(float(observed))
+            history.loc[_.__class__(_) if False else _] = float(observed)
+        self.aci_ = SequentialACI(self.alpha, self.aci_step_size).fit_calibration(truth, preds)
+        self.history_ = y.copy()
+        return self
+
+    def predict_one(self) -> pd.DataFrame:
+        _, one = fit_predict_baseline(self.model_name, self.history_, 1, self.params)
+        pred = float(parse_forecast_output(one).pred[0])
+        lower, upper = self.aci_.interval(pred)
+        half = max((upper - pred) * self.interval_scale, self.minimum_width)
+        lower, upper = pred - half, pred + half
+        self.last_prediction_ = {"pred": pred, "lower": lower, "upper": upper}
+        return pd.DataFrame({"pred": [pred], "lower": [lower], "upper": [upper]}, index=make_future_index(self.history_, 1))
+
+    def update(self, observation: float):
+        if hasattr(self, "last_prediction_"):
+            self.aci_.update(
+                float(observation),
+                float(self.last_prediction_["pred"]),
+                interval=(float(self.last_prediction_["lower"]), float(self.last_prediction_["upper"])),
+            )
+        self.history_.loc[make_future_index(self.history_, 1)[0]] = float(observation)
+        return self
 
 
 class NaiveBaseline(ForecastBaseline):
@@ -1146,24 +1237,72 @@ def evaluate_baseline(
     params: dict,
     *,
     seasonal_period: int = 12,
+    alpha: float = 0.10,
+    conformalize: bool = False,
+    conformal_config: Optional[dict] = None,
+    transformer: Any = None,
 ):
     train = ensure_series(train_series, name="train")
     test = ensure_series(test_series, name="test")
     start = time.perf_counter()
+    if conformalize:
+        config = dict(conformal_config or {})
+        model = ConformalizedBaseline(model_name, params, alpha=alpha, **config).fit(train)
+        rows = []
+        information_cutoff = train.index[-1]
+        for timestamp, observed in test.items():
+            row = model.predict_one().copy()
+            row.index = pd.Index([timestamp])
+            row["target"] = float(observed)
+            row["forecast_origin"] = information_cutoff
+            row["information_cutoff"] = information_cutoff
+            row["target_timestamp"] = timestamp
+            row["interval_method"] = "common_conformal_interval"
+            rows.append(row)
+            model.update(float(observed))
+            information_cutoff = timestamp
+        forecast = pd.concat(rows) if rows else pd.DataFrame()
+        elapsed = time.perf_counter() - start
+        out = parse_forecast_output(forecast)
+        metrics = evaluate_forecast(
+            test,
+            out.pred,
+            y_train=train,
+            lower=out.lower,
+            upper=out.upper,
+            seasonal_period=seasonal_period,
+            alpha=alpha,
+            elapsed_seconds=elapsed,
+            trainable_params=count_trainable_parameters(model),
+        )
+        return {"model": model, "forecast": forecast, "metrics": metrics}
+
     history = train.copy()
+    fitted_transformer = transformer.fit(train.to_numpy(dtype=float)) if transformer is not None else None
     rows = []
     model = None
     for timestamp, observed in test.items():
-        model, one_step = fit_predict_baseline(model_name, history, 1, params)
+        fit_history = history
+        if fitted_transformer is not None:
+            fit_history = pd.Series(
+                fitted_transformer.transform(history.to_numpy(dtype=float)),
+                index=history.index,
+                name=history.name,
+            )
+        model, one_step = fit_predict_baseline(model_name, fit_history, 1, params)
         out = parse_forecast_output(one_step)
         if len(out.pred) != 1:
             raise ValueError(f"{model_name} returned {len(out.pred)} forecasts for a one-step origin.")
+        pred_value = float(out.pred[0])
+        if fitted_transformer is not None:
+            pred_value = float(fitted_transformer.inverse_transform([pred_value])[0])
         row = {
-            "pred": float(out.pred[0]),
+            "pred": pred_value,
             "target": float(observed),
             "forecast_origin": history.index[-1],
             "information_cutoff": history.index[-1],
             "target_timestamp": timestamp,
+            "interval_method": "native_interval",
         }
         if out.lower is not None and out.upper is not None:
             row["lower"] = float(out.lower[0])
@@ -1179,6 +1318,7 @@ def evaluate_baseline(
         y_train=train,
         lower=out.lower,
         upper=out.upper,
+        alpha=alpha,
         seasonal_period=seasonal_period,
         elapsed_seconds=elapsed,
         trainable_params=count_trainable_parameters(model),

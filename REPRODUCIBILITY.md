@@ -1,43 +1,38 @@
 # Reproducibility
 
-## Local Verification
+## Package Verification
 
-Use the Python runtime available in your environment:
+Use:
 
 ```bash
-python -m compileall s3paper
+python -m compileall s3paper tools
 python -m pytest -q
 ```
 
-In this Codex workspace the bundled runtime was:
+Current workspace result:
 
 ```text
-C:\Users\LOQ\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe
+27 passed
 ```
 
-The local result after the repair was:
+## Artifact Discipline
 
-```text
-19 passed
-```
+All future experimental runs should save one canonical long-format result store plus derived tables:
 
-## Required Artifact Discipline
-
-Full experimental runs should save:
-
-- configuration JSON;
-- environment JSON;
-- git commit;
-- per-origin forecasts;
+- `results/per_origin_results.parquet`;
 - per-series metrics;
 - aggregate metrics;
 - diagnostics;
 - shock results;
-- runtime summary;
-- generated paper tables.
+- runtime summaries;
+- paper table CSV and LaTeX exports.
 
-The repository currently contains the causal code path and tests, but not a newly generated full result store from all datasets.
+The result store records commit, configuration hash, data hash, prior parameters, train-only metric scales, internal block sizes, information cutoffs, forecasts, intervals, status, and errors.
 
 ## Execution Boundary
 
-Do not run final paper experiments until causality, scaler, reservoir, conformal, and rolling-protocol tests pass.
+Notebooks were not executed in this package repair task.
+Kaggle experiments were not executed in this package repair task.
+Final paper results were not regenerated.
+
+Run full experiments only after package tests pass and dataset configuration is fixed.

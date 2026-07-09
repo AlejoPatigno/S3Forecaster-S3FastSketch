@@ -12,8 +12,13 @@ This package consolidates the repeated experimental code from the CIF, M3, M4, T
 | Frozen preprocessing transforms | `s3paper/preprocessing.py` |
 | Residual feature transformers | `s3paper/residual_features.py` |
 | Sequential ACI intervals | `s3paper/conformal.py` |
-| Rolling one-step protocol | `s3paper/rolling_protocol.py` |
+| Rolling one-step protocol | `s3paper/rolling_evaluation.py` |
+| Internal calibration split | `s3paper/calibration.py` |
 | Point and interval metrics | `s3paper/metrics.py` |
+| Canonical result store | `s3paper/result_store.py` |
+| Temporal CV folds | `s3paper/temporal_cv.py` |
+| Prior forecast cache | `s3paper/prior_cache.py` |
+| Multi-series HPO helpers | `s3paper/multiseries_hpo.py` |
 | Residual diagnostics | `s3paper/residual_analysis.py` |
 | S3-Forecaster class | `s3paper/s3_forecaster.py` |
 | S3-Forecaster HPO and final test | `s3paper/s3_forecaster_experiment.py` |
@@ -26,9 +31,6 @@ This package consolidates the repeated experimental code from the CIF, M3, M4, T
 | Multi-prior robustness | `s3paper/multi_prior_robustness.py` |
 | Common paper-level orchestration | `s3paper/paper_pipeline.py` |
 | Minimal executable example | `examples/minimal_pipeline.py` |
-| M4 repository-backed notebook | `notebooks/3sforecaster_m4_repository_reproduction.ipynb` |
-| Kaggle CPU notebook package | `kaggle/` |
-| Notebook generator | `tools/make_m4_kaggle_notebook.py` |
 | Core smoke tests | `tests/test_smoke.py` |
 
 ## Repository setup
@@ -92,11 +94,7 @@ The Kaggle notebook must be able to import `s3paper`. The generated notebook inc
 2. run from a Kaggle environment where this repository has been checked out;
 3. after publishing the Git repository remotely, add a notebook setup cell that installs from that remote URL.
 
-The current Kaggle CPU notebook was pushed and completed successfully at:
-
-```text
-https://www.kaggle.com/code/alejopatio/s3forecaster-s3fastsketch-m4-cpu
-```
+Notebook and Kaggle execution are outside the current package-only validation boundary. Corrected paper results should be regenerated from the package APIs and canonical result store.
 
 ## Canonical metric convention
 
@@ -106,7 +104,7 @@ https://www.kaggle.com/code/alejopatio/s3forecaster-s3fastsketch-m4-cpu
 - `mape_percent`: percentage MAPE, e.g. `5.2`;
 - `smape` and `smape_percent` follow the same convention.
 
-The publication-oriented table uses `MAPE (%)`. Interval metrics are computed only when lower and upper bounds are provided. MSIS is normalized using the in-sample seasonal-naive absolute-error scale.
+The publication-oriented table uses percent columns for relative metrics. Interval metrics are computed only when lower and upper bounds are provided. MASE, RMSSE, and MSIS use train-only seasonal-naive scales; result-store-derived metrics use the precomputed scales saved before test evaluation.
 
 ## Basic evaluation
 
@@ -317,8 +315,9 @@ Custom foundation models, including TimesFM, Moirai, and TimeGPT-like models, ca
 5. Residual scalers are fitted once and remain frozen on calibration/test transforms.
 6. Shock thresholds are estimated from training observations only.
 7. Ablation, data-efficiency, and multi-prior experiments reuse fixed hyperparameters.
-8. Every final result can report wall-clock time and the number of fitted trainable parameters through the shared metric interface.
-9. Randomized components receive an explicit seed.
+8. The canonical result store records train-only scales, hashes, model/prior status, internal block sizes, information cutoffs, runtimes, and errors.
+9. Every final result can report wall-clock time and the number of fitted trainable parameters through the shared metric interface.
+10. Randomized components receive an explicit seed.
 
 See `NOTEBOOK_AUDIT.md` for the consolidation decisions and differences identified among the original notebooks.
 See `METHODOLOGY_CONTRACT.md` for the current causal evaluation contract and `RESULTS_AUDIT.md` for the result-reconciliation status.
