@@ -43,7 +43,7 @@ def main():
         "conv_scales": (2, 3),
         "use_calendar": True,
         "ridge_alpha": 1.0,
-        "shrinkage_max": 1.5,
+        "shrinkage_max": 1.0,
         "oob_split_ratio": 0.65,
     }
 

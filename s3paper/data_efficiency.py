@@ -28,7 +28,7 @@ def make_params_feasible(
 
     p = copy.deepcopy(params or {})
     max_window = max(2, n_history - 2)
-    for key in ("input_window", "window_size", "lags", "ar_lags", "foundation_window"):
+    for key in ("input_window", "window_size", "lags", "ar_lags", "foundation_window", "prior__window"):
         if key in p and p[key] is not None:
             p[key] = int(np.clip(int(p[key]), 1, max_window))
 
@@ -56,8 +56,10 @@ def make_params_feasible(
             p["foundation_window"] = int(
                 min(max(2, p["foundation_window"]), max(2, n_history // 4))
             )
-        if "oob_split_ratio" in p:
-            p["oob_split_ratio"] = float(np.clip(p["oob_split_ratio"], 0.55, 0.85))
+        if "oob_split_ratio" in p and "calibration_split_ratio" not in p:
+            p["calibration_split_ratio"] = p.pop("oob_split_ratio")
+        if "calibration_split_ratio" in p:
+            p["calibration_split_ratio"] = float(np.clip(p["calibration_split_ratio"], 0.55, 0.85))
     return p
 
 
@@ -127,7 +129,20 @@ def evaluate_named_model(
             uq_params=uq_params,
             seasonal_period=seasonal_period,
         )
-    if model_name in {"base_only", "base_residual", "base_residual_gate", "full_aci", "full_static"}:
+    if model_name in {
+        "prior_only",
+        "no_reservoir",
+        "no_ar_lags",
+        "no_gate",
+        "static_conformal",
+        "no_adapter_selector",
+        "full_model",
+        "base_only",
+        "base_residual",
+        "base_residual_gate",
+        "full_aci",
+        "full_static",
+    }:
         output = run_s3_ablation_study(
             train_series,
             test_series,

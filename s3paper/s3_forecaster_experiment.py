@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 
 from .metrics import evaluate_forecast
+from .priors import MANDATORY_PRIOR_NAMES, split_model_prior_params, suggest_prior_params
+from .rolling_protocol import evaluate_rolling_model
 from .s3_forecaster import S3Forecaster
 from .utils import count_trainable_parameters, ensure_series
 
@@ -27,7 +29,9 @@ def optimize_s3_forecaster(
     val_size: int = 12,
     n_trials: int = 100,
     seed: int = 42,
-    objective_metric: str = "mape",
+    objective_metric: str = "paper_point",
+    smape_weight: float = 1.0,
+    prior_names: tuple[str, ...] | list[str] | None = None,
 ):
     """Optimize point-forecast hyperparameters on a chronological validation block."""
 
@@ -41,24 +45,36 @@ def optimize_s3_forecaster(
     def objective(trial: optuna.Trial) -> float:
         params = {
             "reservoir_size": trial.suggest_int("reservoir_size", 1, 200),
-            "spectral_radius": trial.suggest_float("spectral_radius", 0.5, 1.5),
+            "spectral_radius": trial.suggest_float("spectral_radius", 0.05, 0.99),
+            "leak_rate": trial.suggest_float("leak_rate", 0.05, 1.0),
             "ar_lags": trial.suggest_int("ar_lags", 2, min(12, max(2, len(train) // 6))),
-            "foundation_window": trial.suggest_int(
-                "foundation_window", 3, min(24, max(3, len(train) // 4))
-            ),
             "regressor_type": trial.suggest_categorical(
                 "regressor_type", ["Ridge", "ElasticNet", "Lasso"]
             ),
             "reg_alpha": trial.suggest_float("reg_alpha", 0.1, 50.0, log=True),
             "aci_step_size": trial.suggest_float("aci_step_size", 0.01, 0.2),
-            "oob_split_ratio": trial.suggest_float("oob_split_ratio", 0.60, 0.85),
+            "calibration_split_ratio": trial.suggest_float("calibration_split_ratio", 0.60, 0.85),
         }
+        params.update(
+            suggest_prior_params(
+                trial,
+                train_length=len(train),
+                seasonal_period=12,
+                prior_names=prior_names or MANDATORY_PRIOR_NAMES,
+            )
+        )
         try:
-            model = S3Forecaster(horizon=len(validation), **params)
-            model.fit(train)
-            forecast = model.predict()
-            metrics = evaluate_forecast(validation, forecast["pred"], eps=1e-5)
-            score = metrics[objective_metric]
+            model_params, prior_name, prior_params = split_model_prior_params(params)
+            trial.set_user_attr("prior_name", prior_name)
+            trial.set_user_attr("prior_params", prior_params)
+            model = S3Forecaster(horizon=1, **model_params)
+            result = evaluate_rolling_model(model, train, validation)
+            metrics = result["metrics"]
+            score = (
+                metrics["mase"] + smape_weight * metrics["smape_percent"] / 100.0
+                if objective_metric == "paper_point"
+                else metrics[objective_metric]
+            )
             return float(score) if np.isfinite(score) else float("inf")
         except Exception as exc:
             trial.set_user_attr("error", str(exc))
@@ -96,15 +112,23 @@ def optimize_s3_uq(
         aci_step_size = trial.suggest_float("aci_step_size", 0.005, 0.20, log=True)
         interval_scale = trial.suggest_float("interval_scale", 0.5, 8.0, log=True)
         try:
-            params = dict(point_params)
+            params, prior_name, prior_params = split_model_prior_params(point_params)
             params["aci_step_size"] = aci_step_size
+            trial.set_user_attr("prior_name", prior_name)
+            trial.set_user_attr("prior_params", prior_params)
             model = S3Forecaster(
-                horizon=len(validation),
+                horizon=1,
                 target_miscoverage=target_miscoverage,
                 **params,
             )
-            model.fit(train)
-            forecast = model.predict().copy()
+            result = evaluate_rolling_model(
+                model,
+                train,
+                validation,
+                alpha=1.0 - target_coverage,
+                seasonal_period=seasonal_period,
+            )
+            forecast = result["forecast"].copy()
             center = forecast["pred"].to_numpy()
             half_width = 0.5 * (
                 forecast["upper"].to_numpy() - forecast["lower"].to_numpy()
@@ -148,17 +172,21 @@ def evaluate_s3_forecaster(
     test = ensure_series(test_series, name="test")
     uq_params = dict(uq_params or {})
 
-    params = dict(point_params)
+    params, _, _ = split_model_prior_params(point_params)
     if "aci_step_size" in uq_params:
         params["aci_step_size"] = uq_params["aci_step_size"]
     target_miscoverage = float(uq_params.get("target_miscoverage", alpha))
 
-    model = S3Forecaster(
-        horizon=len(test), target_miscoverage=target_miscoverage, **params
-    )
+    model = S3Forecaster(horizon=1, target_miscoverage=target_miscoverage, **params)
     start = time.perf_counter()
-    model.fit(train)
-    forecast = model.predict().copy()
+    result = evaluate_rolling_model(
+        model,
+        train,
+        test,
+        seasonal_period=seasonal_period,
+        alpha=alpha,
+    )
+    forecast = result["forecast"].copy()
     elapsed = time.perf_counter() - start
 
     interval_scale = float(uq_params.get("interval_scale", 1.0))
@@ -170,17 +198,9 @@ def evaluate_s3_forecaster(
         forecast["lower"] = center - interval_scale * half_width
         forecast["upper"] = center + interval_scale * half_width
 
-    metrics = evaluate_forecast(
-        test,
-        forecast["pred"],
-        y_train=train,
-        lower=forecast["lower"],
-        upper=forecast["upper"],
-        alpha=alpha,
-        seasonal_period=seasonal_period,
-        elapsed_seconds=elapsed,
-        trainable_params=count_trainable_parameters(model),
-    )
+    metrics = result["metrics"]
+    metrics["elapsed_seconds"] = elapsed
+    metrics["trainable_params"] = count_trainable_parameters(model)
     return {"model": model, "forecast": forecast, "metrics": metrics}
 
 

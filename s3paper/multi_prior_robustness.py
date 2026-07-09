@@ -11,6 +11,7 @@ import pandas as pd
 
 from .chronos import chronos_predict_fixed_horizon, make_chronos_predictor
 from .metrics import evaluate_forecast, seasonal_naive_scale
+from .rolling_evaluation import evaluate_rolling_model
 from .s3_fastsketch import S3FastSketchForecaster
 from .s3_forecaster import S3Forecaster, SimpleFoundationProxy
 from .utils import (
@@ -242,17 +243,19 @@ def evaluate_s3_with_prior(
     test = ensure_series(test_series)
     uq = dict(uq_params or {})
     params = dict(point_params)
+    if "oob_split_ratio" in params and "calibration_split_ratio" not in params:
+        params["calibration_split_ratio"] = params.pop("oob_split_ratio")
     if "aci_step_size" in uq:
         params["aci_step_size"] = uq["aci_step_size"]
     model = S3Forecaster(
-        horizon=len(test),
+        horizon=1,
         target_miscoverage=float(uq.get("target_miscoverage", alpha)),
         foundation=prior,
         **params,
     )
     start = time.perf_counter()
-    model.fit(train)
-    forecast = model.predict().copy()
+    result = evaluate_rolling_model(model, train, test, seasonal_period=seasonal_period, alpha=alpha)
+    forecast = result["forecast"].copy()
     elapsed = time.perf_counter() - start
     scale = float(uq.get("interval_scale", 1.0))
     if scale != 1.0:
@@ -260,17 +263,9 @@ def evaluate_s3_with_prior(
         half = 0.5 * (forecast["upper"].to_numpy() - forecast["lower"].to_numpy())
         forecast["lower"] = center - scale * half
         forecast["upper"] = center + scale * half
-    metrics = evaluate_forecast(
-        test,
-        forecast["pred"],
-        y_train=train,
-        lower=forecast["lower"],
-        upper=forecast["upper"],
-        alpha=alpha,
-        seasonal_period=seasonal_period,
-        elapsed_seconds=elapsed,
-        trainable_params=count_trainable_parameters(model),
-    )
+    metrics = dict(result["metrics"])
+    metrics["elapsed_seconds"] = elapsed
+    metrics["trainable_params"] = count_trainable_parameters(model)
     return {"model": model, "forecast": forecast, "metrics": metrics}
 
 
@@ -289,8 +284,14 @@ def evaluate_fastsketch_with_prior(
     uq = dict(uq_params or {})
     point_keys = {
         "foundation_window", "ar_lags", "ema_spans", "conv_scales",
-        "use_calendar", "ridge_alpha", "oob_split_ratio", "shrinkage_max",
+        "use_calendar", "ridge_alpha", "calibration_split_ratio", "shrinkage_max",
+        "prior_name", "prior__window", "prior__seasonal_period", "prior__ets_trend",
+        "prior__ets_damped", "prior__theta_period", "prior__chronos_model_id",
+        "prior__timesfm_model_id",
     }
+    point_params = dict(point_params)
+    if "oob_split_ratio" in point_params and "calibration_split_ratio" not in point_params:
+        point_params["calibration_split_ratio"] = point_params.pop("oob_split_ratio")
     params = {key: value for key, value in point_params.items() if key in point_keys}
     model = S3FastSketchForecaster(
         horizon=1,
@@ -307,14 +308,13 @@ def evaluate_fastsketch_with_prior(
         train, seasonal_period=seasonal_period
     )
     start = time.perf_counter()
-    model.fit(train)
-    forecast = model.predict(
-        steps=len(test),
-        recursive=True,
-        interval_scale=float(uq.get("interval_scale", 1.0)),
-        interval_power=float(uq.get("interval_power", 0.5)),
-        min_width=min_width,
-    )
+    result = evaluate_rolling_model(model, train, test, seasonal_period=seasonal_period, alpha=alpha)
+    forecast = result["forecast"].copy()
+    center = forecast["pred"].to_numpy(dtype=float)
+    half = 0.5 * (forecast["upper"].to_numpy(dtype=float) - forecast["lower"].to_numpy(dtype=float))
+    half = np.maximum(float(uq.get("interval_scale", 1.0)) * half, min_width)
+    forecast["lower"] = center - half
+    forecast["upper"] = center + half
     elapsed = time.perf_counter() - start
     metrics = evaluate_forecast(
         test,

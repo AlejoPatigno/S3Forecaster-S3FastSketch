@@ -8,6 +8,11 @@ This package consolidates the repeated experimental code from the CIF, M3, M4, T
 |---|---|
 | Shared array/index utilities | `s3paper/utils.py` |
 | Dataset transformation helpers | `s3paper/data.py` |
+| Causal prior registry | `s3paper/priors.py` |
+| Frozen preprocessing transforms | `s3paper/preprocessing.py` |
+| Residual feature transformers | `s3paper/residual_features.py` |
+| Sequential ACI intervals | `s3paper/conformal.py` |
+| Rolling one-step protocol | `s3paper/rolling_protocol.py` |
 | Point and interval metrics | `s3paper/metrics.py` |
 | Residual diagnostics | `s3paper/residual_analysis.py` |
 | S3-Forecaster class | `s3paper/s3_forecaster.py` |
@@ -147,6 +152,8 @@ fast_result = run_fastsketch_experiment(
 ```
 
 Both functions optimize on a chronological holdout extracted from the training set. The test set is used once for final evaluation.
+
+The proposed-model HPO objective includes the prior as a first-class hyperparameter. Mandatory lightweight choices are `causal_rolling_mean`, `seasonal_naive`, `ets`, and `theta`; optional foundation choices `chronos` and `timesfm` fail explicitly if their adapters or dependencies are unavailable. Prior-specific parameters are stored with `prior__*` names such as `prior__window`, `prior__seasonal_period`, `prior__ets_trend`, `prior__ets_damped`, and `prior__theta_period`.
 
 ## Baselines
 
@@ -305,9 +312,13 @@ Custom foundation models, including TimesFM, Moirai, and TimeGPT-like models, ca
 
 1. Point and UQ hyperparameters are selected from training data only.
 2. UQ optimization never queries the final test set.
-3. Shock thresholds are estimated from training observations only.
-4. Ablation, data-efficiency, and multi-prior experiments reuse fixed hyperparameters.
-5. Every final result can report wall-clock time and the number of fitted trainable parameters through the shared metric interface.
-6. Randomized components receive an explicit seed.
+3. Proposed-model test evaluation uses `predict_one()` before target reveal and `update(observation)` after forecast storage.
+4. Priors expose causal fitted values and sequential update methods.
+5. Residual scalers are fitted once and remain frozen on calibration/test transforms.
+6. Shock thresholds are estimated from training observations only.
+7. Ablation, data-efficiency, and multi-prior experiments reuse fixed hyperparameters.
+8. Every final result can report wall-clock time and the number of fitted trainable parameters through the shared metric interface.
+9. Randomized components receive an explicit seed.
 
 See `NOTEBOOK_AUDIT.md` for the consolidation decisions and differences identified among the original notebooks.
+See `METHODOLOGY_CONTRACT.md` for the current causal evaluation contract and `RESULTS_AUDIT.md` for the result-reconciliation status.
