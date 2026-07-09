@@ -1,6 +1,6 @@
 # Validation report
 
-Validation date: 2026-07-01
+Validation date: 2026-07-09
 
 ## Static validation
 
@@ -13,7 +13,7 @@ Validation date: 2026-07-01
 The test suite completed successfully:
 
 ```text
-4 passed
+20 passed
 ```
 
 The tests cover:
@@ -26,7 +26,40 @@ The tests cover:
 6. data-efficiency evaluation;
 7. multi-prior robustness using the rolling prior;
 8. residual diagnostics;
-9. Seasonal Naive baseline evaluation.
+9. Seasonal Naive baseline evaluation;
+10. causal prior fitted values under future perturbation;
+11. frozen scaler behavior;
+12. deterministic subunit-radius reservoir setup;
+13. finite-sample ACI order statistic and update order;
+14. nonnegative FastSketch contraction;
+15. rolling one-step forecast/update protocol;
+16. positive-log transform round trip;
+17. required prior registry coverage;
+18. mandatory prior `fit`/`predict_one`/`predict`/`update(timestamp, value)` execution;
+19. `prior__*` parameter splitting;
+20. explicit optional TimesFM failure;
+21. S3-Forecaster objective records namespaced prior parameters;
+22. S3-FastSketch objective records namespaced prior parameters;
+23. full ablation variants reuse the production rolling evaluator.
+
+## Notebook validation
+
+The five dataset notebooks in `notebooks/` were migrated to the current methodology contract:
+
+- `s3forecaster-s3fastsketch-cif.ipynb`;
+- `s3forecaster-s3fastsketch-icmd.ipynb`;
+- `s3forecaster-s3fastsketch-m3.ipynb`;
+- `s3forecaster-s3fastsketch-m4.ipynb`;
+- `s3forecaster-s3fastsketch-tourism.ipynb`.
+
+Validation completed:
+
+- 5 notebooks parse as JSON notebook documents.
+- 230 total cells.
+- 0 outputs.
+- 0 execution counts.
+- each notebook contains a methodology-contract smoke check for the prior registry.
+- no `oob_split_ratio`, `rolling_mean`, or inline `np.quantile` conformal implementation remains in `notebooks/`.
 
 ## Additional runtime checks
 

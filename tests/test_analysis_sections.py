@@ -34,7 +34,7 @@ def _params():
         "foundation_window": 6,
         "regressor_type": "Ridge",
         "reg_alpha": 1.0,
-        "oob_split_ratio": 0.70,
+        "calibration_split_ratio": 0.70,
         "aci_step_size": 0.05,
     }
     fast = {
@@ -45,7 +45,7 @@ def _params():
         "use_calendar": True,
         "ridge_alpha": 1.0,
         "shrinkage_max": 1.5,
-        "oob_split_ratio": 0.65,
+        "calibration_split_ratio": 0.65,
     }
     return s3, fast
 

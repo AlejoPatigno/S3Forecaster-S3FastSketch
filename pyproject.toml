@@ -15,6 +15,7 @@ dependencies = [
   "statsmodels>=0.14",
   "optuna>=3.5",
   "matplotlib>=3.7",
+  "pyarrow>=14",
 ]
 
 [tool.setuptools.packages.find]

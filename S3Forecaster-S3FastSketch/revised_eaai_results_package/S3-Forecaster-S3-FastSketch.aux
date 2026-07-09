@@ -1,0 +1,261 @@
+\relax 
+\bibstyle{elsarticle-num}
+\citation{park2024forchestra,li2022intermittent}
+\citation{kaur2020smartgrid,zhu2019pdm}
+\citation{lim2021survey}
+\citation{rozanec2021lumpy}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{}\protected@file@percent }
+\citation{gao2023sedan,lim2021survey}
+\citation{hochreiter1997lstm,zhou2021informer,nie2023patchtst}
+\citation{ansari2024chronos,das2024timesfm}
+\citation{gao2023sedan}
+\citation{zeng2023dlinear,shen2023gbt}
+\citation{ehrig2024similarity}
+\citation{hamilton1990regime,hamilton1994arch}
+\citation{callot2014tvpvar,fischer2021tvpvar}
+\citation{onorante2014dma,adams2007bocpd}
+\citation{lu2020drift,tosi2023optwin}
+\citation{zhang2023onenet,zhang2024d3a}
+\citation{zhao2024proceed}
+\citation{casini2018forecast,wendelberger2021bocpd}
+\citation{angelopoulos2023conformal}
+\citation{wang2012gp,bollerslev1986garch}
+\citation{tolvanen2014gp,karlsson2021skewvar}
+\citation{shafer2008tutorial}
+\citation{zaffran2022adaptive,xu2023spci}
+\citation{gibbs2021aci,gibbs2024online}
+\citation{cerqueira2020evaluation,burkner2020lfo}
+\citation{jaeger2004science,armenio2019esn}
+\citation{zeng2023dlinear,gao2023sedan}
+\citation{lukosevicius2009reservoir}
+\citation{zhang2024d3a,zhao2024proceed}
+\citation{gibbs2021aci,xu2023spci}
+\citation{cerqueira2020evaluation,burkner2020lfo}
+\citation{zeng2023dlinear,gao2023sedan}
+\citation{jaeger2004science,armenio2019esn,maass2002reservoir}
+\citation{zhang2023onenet,zhang2024d3a}
+\citation{gibbs2021aci,xu2023spci,angelopoulos2023conformal}
+\citation{cerqueira2020evaluation,burkner2020lfo}
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.1}Key Contributions}{4}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Materials and Methods}{5}{}\protected@file@percent }
+\newlabel{sec:methods}{{2}{5}{}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Problem Formulation}{5}{}\protected@file@percent }
+\newlabel{subsec:problem_formulation}{{2.1}{5}{}{subsection.2.1}{}}
+\newlabel{eq:general_decomposition}{{4}{5}{}{equation.4}{}}
+\newlabel{eq:base_residual}{{5}{5}{}{equation.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Frozen Causal Forecast Prior}{5}{}\protected@file@percent }
+\newlabel{subsec:causal_prior}{{2.2}{5}{}{subsection.2.2}{}}
+\newlabel{eq:causal_base}{{9}{5}{}{equation.9}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}S3-Forecaster: Fixed Reservoir Residual Adaptation}{6}{}\protected@file@percent }
+\newlabel{subsec:s3_forecaster}{{2.3}{6}{}{subsection.2.3}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {2.3.1}Residual Normalization}{6}{}\protected@file@percent }
+\newlabel{eq:residual_scaling}{{13}{6}{}{equation.13}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {2.3.2}Echo State Representation}{6}{}\protected@file@percent }
+\newlabel{eq:esn_candidate}{{15}{6}{}{equation.15}{}}
+\newlabel{eq:esn_state}{{16}{6}{}{equation.16}{}}
+\newlabel{eq:spectral_normalization}{{19}{6}{}{equation.19}{}}
+\newlabel{eq:s3_representation}{{22}{7}{}{equation.22}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {2.3.3}Bayesian Ridge Residual Readout}{7}{}\protected@file@percent }
+\newlabel{eq:bayesian_likelihood}{{23}{7}{}{equation.23}{}}
+\newlabel{eq:ridge_prior}{{24}{7}{}{equation.24}{}}
+\newlabel{eq:ridge_objective}{{27}{7}{}{equation.27}{}}
+\newlabel{eq:ridge_closed_form}{{31}{7}{}{equation.31}{}}
+\newlabel{eq:s3_raw_residual}{{36}{8}{}{equation.36}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {2.3.4}Volatility-Sensitive OOB Gate}{8}{}\protected@file@percent }
+\newlabel{eq:causal_volatility}{{39}{8}{}{equation.39}{}}
+\newlabel{eq:volatility_standardization}{{40}{8}{}{equation.40}{}}
+\newlabel{eq:s3_gate}{{41}{8}{}{equation.41}{}}
+\newlabel{eq:oob_gate_optimization}{{42}{8}{}{equation.42}{}}
+\newlabel{eq:s3_final_forecast}{{43}{8}{}{equation.43}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}S3-FastSketch: Lightweight Multiscale Residual Adaptation}{9}{}\protected@file@percent }
+\newlabel{subsec:fastsketch}{{2.4}{9}{}{subsection.2.4}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {2.4.1}Causal Multiscale Feature Map}{9}{}\protected@file@percent }
+\newlabel{eq:fast_feature_map}{{45}{9}{}{equation.45}{}}
+\@writefile{toc}{\contentsline {paragraph}{Residual lag block.}{9}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Exponentially weighted residual block.}{9}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Residual-magnitude block.}{9}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Local-difference block.}{9}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Fixed causal convolutional block.}{10}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Seasonal and calendar block.}{10}{}\protected@file@percent }
+\newlabel{eq:seasonal_sketch}{{60}{10}{}{equation.60}{}}
+\newlabel{eq:fast_robust_scaling}{{61}{10}{}{equation.61}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {2.4.2}Regularized Residual Readout}{10}{}\protected@file@percent }
+\newlabel{eq:fast_ridge_objective}{{66}{10}{}{equation.66}{}}
+\newlabel{eq:fast_ridge_solution}{{67}{10}{}{equation.67}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {2.4.3}Projected Calibration Shrinkage}{11}{}\protected@file@percent }
+\newlabel{eq:gamma_loss}{{69}{11}{}{equation.69}{}}
+\newlabel{eq:fast_gamma_raw}{{72}{11}{}{equation.72}{}}
+\newlabel{eq:fast_gamma_projected}{{73}{11}{}{equation.73}{}}
+\newlabel{eq:projection_operator}{{74}{11}{}{equation.74}{}}
+\newlabel{eq:fast_final_forecast}{{75}{11}{}{equation.75}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.5}Adaptive Conformal Uncertainty Estimation}{11}{}\protected@file@percent }
+\newlabel{subsec:aci}{{2.5}{11}{}{subsection.2.5}{}}
+\newlabel{eq:nonconformity}{{76}{11}{}{equation.76}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {2.5.1}Dynamic Score Buffer}{12}{}\protected@file@percent }
+\newlabel{eq:aci_buffer}{{78}{12}{}{equation.78}{}}
+\newlabel{eq:aci_quantile}{{81}{12}{}{equation.81}{}}
+\newlabel{eq:aci_interval}{{82}{12}{}{equation.82}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {2.5.2}Sequential Miscoverage Update}{12}{}\protected@file@percent }
+\newlabel{eq:miss_indicator}{{83}{12}{}{equation.83}{}}
+\newlabel{eq:aci_update}{{84}{12}{}{equation.84}{}}
+\newlabel{eq:aci_buffer_update}{{86}{12}{}{equation.86}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.6}Model Complexity}{13}{}\protected@file@percent }
+\newlabel{subsec:model_complexity}{{2.6}{13}{}{subsection.2.6}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3}Experimental Setup}{13}{}\protected@file@percent }
+\newlabel{sec:experimental_setup}{{3}{13}{}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Datasets}{13}{}\protected@file@percent }
+\newlabel{subsec:datasets}{{3.1}{13}{}{subsection.3.1}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.1.1}Industrial Construction-Materials Demand}{13}{}\protected@file@percent }
+\newlabel{eq:industrial_aggregation}{{91}{13}{}{equation.91}{}}
+\citation{makridakis2020m4}
+\citation{makridakis2000m3}
+\citation{athanasopoulos2011tourism}
+\citation{stepnicka2017cif}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Evaluated time series and chronological partitions.}}{14}{}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{tab:datasets}{{1}{14}{}{table.1}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.1.2}Public Benchmark Series}{14}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.1.3}Preprocessing and Data Integrity}{14}{}\protected@file@percent }
+\citation{ansari2024chronos}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Baseline Models}{15}{}\protected@file@percent }
+\newlabel{subsec:baselines}{{3.2}{15}{}{subsection.3.2}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.1}Statistical Models}{15}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.2}Classical Machine-Learning Models}{15}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.3}Deep-Learning Models}{15}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.4}Modern Lightweight and KAN Architectures}{15}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.5}Time-Series Foundation Model}{15}{}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Dataset-level hyperparameter families.}}{16}{}\protected@file@percent }
+\newlabel{tab:hpo_dimensions}{{2}{16}{}{table.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Offline Hyperparameter Selection and Frozen Operational Reuse}{16}{}\protected@file@percent }
+\newlabel{subsec:hpo}{{3.3}{16}{}{subsection.3.3}{}}
+\newlabel{eq:dataset_hpo}{{98}{16}{}{equation.98}{}}
+\newlabel{eq:uq_hpo_objective}{{99}{16}{}{equation.99}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Chronological Validation and Rolling Evaluation}{17}{}\protected@file@percent }
+\newlabel{subsec:temporal_protocol}{{3.4}{17}{}{subsection.3.4}{}}
+\newlabel{eq:rolling_prediction}{{108}{17}{}{equation.108}{}}
+\newlabel{eq:measurability}{{109}{17}{}{equation.109}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}Prediction Intervals for Reference Models}{17}{}\protected@file@percent }
+\newlabel{subsec:baseline_intervals}{{3.5}{17}{}{subsection.3.5}{}}
+\newlabel{eq:baseline_gaussian_interval}{{112}{18}{}{equation.112}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.6}Evaluation Metrics and Protocol}{18}{}\protected@file@percent }
+\newlabel{subsec:metrics}{{3.6}{18}{}{subsection.3.6}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.6.1}Mean Squared Error}{18}{}\protected@file@percent }
+\newlabel{eq:mse}{{114}{18}{}{equation.114}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.6.2}Root Mean Squared Error}{18}{}\protected@file@percent }
+\newlabel{eq:rmse}{{115}{18}{}{equation.115}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.6.3}Coefficient of Determination}{18}{}\protected@file@percent }
+\newlabel{eq:r2}{{117}{18}{}{equation.117}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.6.4}Epsilon-Stabilized MAPE}{18}{}\protected@file@percent }
+\newlabel{eq:mape_eps}{{118}{18}{}{equation.118}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.6.5}Empirical Coverage Probability}{19}{}\protected@file@percent }
+\newlabel{eq:ecp}{{119}{19}{}{equation.119}{}}
+\newlabel{eq:coverage_deviation}{{120}{19}{}{equation.120}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.6.6}Interval Width}{19}{}\protected@file@percent }
+\newlabel{eq:interval_width}{{121}{19}{}{equation.121}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.6.7}Interval Score}{19}{}\protected@file@percent }
+\newlabel{eq:interval_score}{{122}{19}{}{equation.122}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.6.8}Seasonal Scaling Factor}{19}{}\protected@file@percent }
+\newlabel{eq:seasonal_scale}{{123}{19}{}{equation.123}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.6.9}Mean Scaled Interval Score}{19}{}\protected@file@percent }
+\newlabel{eq:msis}{{125}{19}{}{equation.125}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.6.10}Operational Runtime and Trainable Parameters}{20}{}\protected@file@percent }
+\newlabel{eq:operational_time}{{126}{20}{}{equation.126}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.7}Reproducibility Controls}{20}{}\protected@file@percent }
+\newlabel{subsec:reproducibility}{{3.7}{20}{}{subsection.3.7}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Results and Discussion}{20}{}\protected@file@percent }
+\newlabel{sec:results_discussion}{{4}{20}{}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Engineering Case Characterization and Non-Stationarity}{20}{}\protected@file@percent }
+\newlabel{subsec:industrial_data_analysis}{{4.1}{20}{}{subsection.4.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Industrial dataset profile.}}{21}{}\protected@file@percent }
+\newlabel{tab:icmd_profile}{{3}{21}{}{table.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Industrial demand series and temporal split.}}{21}{}\protected@file@percent }
+\newlabel{fig:icmd_data_overview}{{1}{21}{}{figure.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Industrial series diagnostics.}}{22}{}\protected@file@percent }
+\newlabel{tab:icmd_diagnostics}{{4}{22}{}{table.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Overall Benchmarking and Metric-Specific Behaviour}{22}{}\protected@file@percent }
+\newlabel{subsec:benchmark_results}{{4.2}{22}{}{subsection.4.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Component-Wise Ablation Study}{22}{}\protected@file@percent }
+\newlabel{subsec:ablation_results}{{4.3}{22}{}{subsection.4.3}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Point-forecasting results on the model scale.}}{23}{}\protected@file@percent }
+\newlabel{tab:point_performance_vertical}{{5}{23}{}{table.5}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Primary test forecasts.}}{24}{}\protected@file@percent }
+\newlabel{fig:primary_forecasts}{{2}{24}{}{figure.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Component-wise ablation for the S3-Forecaster.}}{24}{}\protected@file@percent }
+\newlabel{fig:primary_ablation}{{3}{24}{}{figure.3}{}}
+\newlabel{eq:residual_correction_utility}{{127}{24}{}{equation.127}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Component-wise ablation results for S3-Forecaster. Point metrics are unchanged by the uncertainty layer; ECP and MSIS are reported only for conformal variants.}}{25}{}\protected@file@percent }
+\newlabel{tab:s3_ablation_vertical}{{6}{25}{}{table.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Adaptive Conformal Uncertainty Estimation}{26}{}\protected@file@percent }
+\newlabel{subsec:adaptive_conformal_results}{{4.4}{26}{}{subsection.4.4}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Adaptive conformal uncertainty and operational-efficiency results on the model scale.}}{27}{}\protected@file@percent }
+\newlabel{tab:uq_performance_vertical}{{7}{27}{}{table.7}{}}
+\newlabel{tab:efficiency_vertical}{{7}{27}{}{table.7}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces Causal volatility diagnostics.}}{28}{}\protected@file@percent }
+\newlabel{tab:volatility_diagnostics}{{8}{28}{}{table.8}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Causal volatility diagnostics.}}{28}{}\protected@file@percent }
+\newlabel{fig:volatility_diagnostics}{{4}{28}{}{figure.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Data Efficiency and History-Length Spectrum}{28}{}\protected@file@percent }
+\newlabel{subsec:data_efficiency_results}{{4.5}{28}{}{subsection.4.5}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Data-efficiency profiles. The horizontal axis shows the available history and the vertical axis reports MAPE as a percentage.}}{29}{}\protected@file@percent }
+\newlabel{fig:data_efficiency_all_datasets}{{5}{29}{}{figure.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.6}Multi-Prior Robustness and Backbone Transferability}{29}{}\protected@file@percent }
+\newlabel{subsec:multiprior_results}{{4.6}{29}{}{subsection.4.6}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Multi-prior transferability. The vertical axis reports MAPE as a percentage for each model--prior configuration.}}{30}{}\protected@file@percent }
+\newlabel{fig:multi_prior_all_datasets}{{6}{30}{}{figure.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.7}Operational Efficiency and Parameter Economy}{30}{}\protected@file@percent }
+\newlabel{subsec:efficiency_results}{{4.7}{30}{}{subsection.4.7}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces Operational runtime--parameter trade-off.}}{31}{}\protected@file@percent }
+\newlabel{fig:runtime_parameter_tradeoff}{{7}{31}{}{figure.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.8}Limitations and Scientific Synthesis}{31}{}\protected@file@percent }
+\newlabel{subsec:scientific_synthesis}{{4.8}{31}{}{subsection.4.8}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Conclusions}{32}{}\protected@file@percent }
+\bibcite{park2024forchestra}{{1}{}{{}}{{}}}
+\bibcite{li2022intermittent}{{2}{}{{}}{{}}}
+\bibcite{kaur2020smartgrid}{{3}{}{{}}{{}}}
+\bibcite{zhu2019pdm}{{4}{}{{}}{{}}}
+\bibcite{lim2021survey}{{5}{}{{}}{{}}}
+\bibcite{rozanec2021lumpy}{{6}{}{{}}{{}}}
+\bibcite{gao2023sedan}{{7}{}{{}}{{}}}
+\bibcite{hochreiter1997lstm}{{8}{}{{}}{{}}}
+\bibcite{zhou2021informer}{{9}{}{{}}{{}}}
+\bibcite{nie2023patchtst}{{10}{}{{}}{{}}}
+\bibcite{ansari2024chronos}{{11}{}{{}}{{}}}
+\bibcite{das2024timesfm}{{12}{}{{}}{{}}}
+\bibcite{zeng2023dlinear}{{13}{}{{}}{{}}}
+\bibcite{shen2023gbt}{{14}{}{{}}{{}}}
+\bibcite{ehrig2024similarity}{{15}{}{{}}{{}}}
+\bibcite{hamilton1990regime}{{16}{}{{}}{{}}}
+\bibcite{hamilton1994arch}{{17}{}{{}}{{}}}
+\bibcite{callot2014tvpvar}{{18}{}{{}}{{}}}
+\bibcite{fischer2021tvpvar}{{19}{}{{}}{{}}}
+\bibcite{onorante2014dma}{{20}{}{{}}{{}}}
+\bibcite{adams2007bocpd}{{21}{}{{}}{{}}}
+\bibcite{wendelberger2021bocpd}{{22}{}{{}}{{}}}
+\bibcite{lu2020drift}{{23}{}{{}}{{}}}
+\bibcite{tosi2023optwin}{{24}{}{{}}{{}}}
+\bibcite{zhang2023onenet}{{25}{}{{}}{{}}}
+\bibcite{zhang2024d3a}{{26}{}{{}}{{}}}
+\bibcite{zhao2024proceed}{{27}{}{{}}{{}}}
+\bibcite{casini2018forecast}{{28}{}{{}}{{}}}
+\bibcite{angelopoulos2023conformal}{{29}{}{{}}{{}}}
+\bibcite{bollerslev1986garch}{{30}{}{{}}{{}}}
+\bibcite{wang2012gp}{{31}{}{{}}{{}}}
+\bibcite{tolvanen2014gp}{{32}{}{{}}{{}}}
+\bibcite{karlsson2021skewvar}{{33}{}{{}}{{}}}
+\bibcite{shafer2008tutorial}{{34}{}{{}}{{}}}
+\bibcite{zaffran2022adaptive}{{35}{}{{}}{{}}}
+\bibcite{xu2023spci}{{36}{}{{}}{{}}}
+\bibcite{gibbs2021aci}{{37}{}{{}}{{}}}
+\bibcite{gibbs2024online}{{38}{}{{}}{{}}}
+\bibcite{cerqueira2020evaluation}{{39}{}{{}}{{}}}
+\bibcite{burkner2020lfo}{{40}{}{{}}{{}}}
+\bibcite{jaeger2004science}{{41}{}{{}}{{}}}
+\bibcite{armenio2019esn}{{42}{}{{}}{{}}}
+\bibcite{lukosevicius2009reservoir}{{43}{}{{}}{{}}}
+\bibcite{maass2002reservoir}{{44}{}{{}}{{}}}
+\bibcite{makridakis2020m4}{{45}{}{{}}{{}}}
+\bibcite{makridakis2000m3}{{46}{}{{}}{{}}}
+\bibcite{athanasopoulos2011tourism}{{47}{}{{}}{{}}}
+\bibcite{stepnicka2017cif}{{48}{}{{}}{{}}}
+\providecommand\NAT@force@numbers{}\NAT@force@numbers
+\gdef \@abspage@last{38}

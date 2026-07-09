@@ -7,10 +7,89 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
-from .metrics import evaluate_forecast
+from .metrics import evaluate_forecast, mase
 from .s3_fastsketch_experiment import evaluate_fastsketch
 from .s3_forecaster_experiment import evaluate_s3_forecaster
 from .utils import ensure_series, parse_forecast_output
+
+
+def _event_start(series: pd.Series, start: int | None = None) -> int:
+    if start is not None:
+        return int(np.clip(start, 0, len(series) - 1))
+    return int(max(1, len(series) // 2))
+
+
+def _shock_result(clean: pd.Series, modified: pd.Series, start: int, duration: int, magnitude: float) -> dict[str, Any]:
+    return {
+        "series": modified,
+        "event_start": clean.index[int(start)],
+        "event_start_position": int(start),
+        "duration": int(duration),
+        "magnitude": float(magnitude),
+        "counterfactual": clean,
+    }
+
+
+def inject_additive_spike(series: Any, magnitude: float, *, start: int | None = None):
+    clean = ensure_series(series)
+    modified = clean.copy()
+    pos = _event_start(clean, start)
+    modified.iloc[pos] = float(modified.iloc[pos] + magnitude)
+    return _shock_result(clean, modified, pos, 1, magnitude)
+
+
+def inject_temporary_pulse(series: Any, magnitude: float, duration: int = 3, *, start: int | None = None):
+    clean = ensure_series(series)
+    modified = clean.copy()
+    pos = _event_start(clean, start)
+    end = min(len(modified), pos + int(duration))
+    modified.iloc[pos:end] = modified.iloc[pos:end] + float(magnitude)
+    return _shock_result(clean, modified, pos, end - pos, magnitude)
+
+
+def inject_level_shift(series: Any, magnitude: float, *, start: int | None = None):
+    clean = ensure_series(series)
+    modified = clean.copy()
+    pos = _event_start(clean, start)
+    modified.iloc[pos:] = modified.iloc[pos:] + float(magnitude)
+    return _shock_result(clean, modified, pos, len(modified) - pos, magnitude)
+
+
+def inject_variance_shift(series: Any, magnitude: float, *, start: int | None = None, seed: int = 42):
+    clean = ensure_series(series)
+    modified = clean.copy()
+    pos = _event_start(clean, start)
+    rng = np.random.default_rng(seed)
+    scale = float(abs(magnitude))
+    noise = rng.normal(0.0, scale, len(modified) - pos)
+    modified.iloc[pos:] = modified.iloc[pos:].to_numpy(dtype=float) + noise
+    return _shock_result(clean, modified, pos, len(modified) - pos, magnitude)
+
+
+def inject_trend_shift(series: Any, magnitude: float, *, start: int | None = None):
+    clean = ensure_series(series)
+    modified = clean.copy()
+    pos = _event_start(clean, start)
+    ramp = np.arange(len(modified) - pos, dtype=float)
+    modified.iloc[pos:] = modified.iloc[pos:].to_numpy(dtype=float) + float(magnitude) * ramp
+    return _shock_result(clean, modified, pos, len(modified) - pos, magnitude)
+
+
+def inject_seasonal_amplitude_shift(
+    series: Any,
+    magnitude: float,
+    *,
+    seasonal_period: int = 12,
+    start: int | None = None,
+):
+    clean = ensure_series(series)
+    modified = clean.copy()
+    pos = _event_start(clean, start)
+    m = max(2, int(seasonal_period))
+    t = np.arange(len(modified) - pos, dtype=float)
+    seasonal = np.sin(2.0 * np.pi * t / m)
+    modified.iloc[pos:] = modified.iloc[pos:].to_numpy(dtype=float) + float(magnitude) * seasonal
+    return _shock_result(clean, modified, pos, len(modified) - pos, magnitude)
 
 
 def seasonal_abs_innovations_train(train_series: Any, seasonal_period: int = 12):
@@ -192,6 +271,64 @@ def analyze_forecast_shocks(
         "shock_mask": shock,
         "non_shock_mask": non_shock,
         "threshold_metadata": metadata,
+    }
+
+
+def controlled_shock_metrics(
+    train_series: Any,
+    test_series: Any,
+    forecast: Any,
+    *,
+    event_start_position: int,
+    duration: int,
+    seasonal_period: int = 12,
+    alpha: float = 0.10,
+    recovery_tolerance: float | None = None,
+) -> dict[str, Any]:
+    train = ensure_series(train_series, name="train")
+    test = ensure_series(test_series, name="test")
+    out = parse_forecast_output(forecast)
+    y = test.to_numpy(dtype=float)
+    pred = out.pred
+    errors = np.abs(y - pred)
+    start = int(np.clip(event_start_position, 0, len(test)))
+    end = int(np.clip(start + int(duration), start, len(test)))
+    pre_mask = np.arange(len(test)) < start
+    shock_mask = (np.arange(len(test)) >= start) & (np.arange(len(test)) < end)
+    post_mask = np.arange(len(test)) >= end
+
+    def subset_mase(mask: np.ndarray) -> float:
+        return mase(y[mask], pred[mask], train, seasonal_period=seasonal_period) if mask.any() else np.nan
+
+    tolerance = recovery_tolerance
+    if tolerance is None:
+        tolerance = float(np.nanmedian(errors[pre_mask])) if pre_mask.any() else float(np.nanmedian(errors))
+        if not np.isfinite(tolerance) or tolerance <= 1e-12:
+            tolerance = float(np.nanmean(errors) + 1e-12)
+    recovery_time = np.nan
+    for offset, value in enumerate(errors[end:], start=0):
+        if value <= tolerance:
+            recovery_time = float(offset)
+            break
+
+    lower = out.lower if out.lower is not None else np.repeat(np.nan, len(test))
+    upper = out.upper if out.upper is not None else np.repeat(np.nan, len(test))
+    covered = (y >= lower) & (y <= upper)
+    width = upper - lower
+    baseline_width = float(np.nanmedian(width[pre_mask])) if pre_mask.any() else float(np.nanmedian(width))
+    shock_width = float(np.nanmedian(width[shock_mask])) if shock_mask.any() else np.nan
+    frame = forecast.copy() if isinstance(forecast, pd.DataFrame) else pd.DataFrame(index=test.index)
+    return {
+        "pre_shock_mase": subset_mase(pre_mask),
+        "shock_window_mase": subset_mase(shock_mask),
+        "post_shock_mase": subset_mase(post_mask),
+        "peak_error": float(np.nanmax(errors)) if len(errors) else np.nan,
+        "recovery_time": recovery_time,
+        "interval_coverage": float(np.nanmean(covered.astype(float))) if len(covered) else np.nan,
+        "interval_width_inflation": float(shock_width / baseline_width) if np.isfinite(baseline_width) and baseline_width > 1e-12 else np.nan,
+        "gate_trajectory": frame["gate"].tolist() if "gate" in frame else [],
+        "adapter_activation": frame["adapter_active"].astype(bool).tolist() if "adapter_active" in frame else [],
+        "alpha": float(alpha),
     }
 
 

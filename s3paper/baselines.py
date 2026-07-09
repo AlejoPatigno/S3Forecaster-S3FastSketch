@@ -85,6 +85,20 @@ class ForecastBaseline:
         return count_trainable_parameters(getattr(self, "model_", None))
 
 
+class NaiveBaseline(ForecastBaseline):
+    def fit(self, series: Any):
+        self.series_ = ensure_series(series)
+        return self
+
+    def predict(self, horizon: int):
+        value = float(self.series_.iloc[-1])
+        return pd.Series(
+            np.repeat(value, int(horizon)),
+            index=make_future_index(self.series_, int(horizon)),
+            name="pred",
+        )
+
+
 class SeasonalNaiveBaseline(ForecastBaseline):
     def __init__(self, seasonal_period: int = 12):
         self.seasonal_period = int(seasonal_period)
@@ -126,6 +140,31 @@ class ETSBaseline(ForecastBaseline):
     def predict(self, horizon: int):
         values = np.asarray(self.model_.forecast(horizon), dtype=float).reshape(-1)
         return pd.Series(values, index=make_future_index(self.series_, horizon), name="pred")
+
+    def trainable_parameter_count(self) -> int:
+        return int(np.asarray(getattr(self.model_, "params", [])).size)
+
+
+class ThetaBaseline(ForecastBaseline):
+    def __init__(self, period: int = 12, deseasonalize: bool = True):
+        self.period = int(period)
+        self.deseasonalize = bool(deseasonalize)
+
+    def fit(self, series: Any):
+        from statsmodels.tsa.forecasting.theta import ThetaModel
+
+        self.series_ = ensure_series(series)
+        period = self.period if len(self.series_) >= 2 * self.period else None
+        self.model_ = ThetaModel(
+            self.series_,
+            period=period,
+            deseasonalize=self.deseasonalize and period is not None,
+        ).fit()
+        return self
+
+    def predict(self, horizon: int):
+        values = np.asarray(self.model_.forecast(int(horizon)), dtype=float).reshape(-1)
+        return pd.Series(values, index=make_future_index(self.series_, int(horizon)), name="pred")
 
     def trainable_parameter_count(self) -> int:
         return int(np.asarray(getattr(self.model_, "params", [])).size)
@@ -872,6 +911,30 @@ class ChronosBaseline(ForecastBaseline):
         return 0
 
 
+class TimesFMBaseline(ForecastBaseline):
+    def __init__(self, model_id: str = "google/timesfm-2.0-500m-pytorch", model_or_factory: Any = None):
+        self.model_id = model_id
+        self.model_or_factory = model_or_factory
+
+    def fit(self, series: Any):
+        self.series_ = ensure_series(series)
+        if self.model_or_factory is None:
+            raise ImportError(
+                "TimesFM baseline requested but no TimesFM adapter is configured. "
+                "Pass model_or_factory to evaluate TimesFM explicitly."
+            )
+        self.model_ = self.model_or_factory() if callable(self.model_or_factory) else self.model_or_factory
+        if hasattr(self.model_, "fit"):
+            self.model_.fit(self.series_)
+        return self
+
+    def predict(self, horizon: int):
+        return recursive_point_forecast(self.model_, self.series_, int(horizon))
+
+    def trainable_parameter_count(self) -> int:
+        return 0
+
+
 BASELINE_ALIASES = {
     "KRR": "KernelRidge",
     "GPR": "GaussianProcess",
@@ -886,7 +949,9 @@ def canonical_baseline_name(model_name: str) -> str:
 
 
 BASELINE_CLASSES = {
+    "Naive": NaiveBaseline,
     "SeasonalNaive": SeasonalNaiveBaseline,
+    "Theta": ThetaBaseline,
     "ETS": ETSBaseline,
     "ARIMA": ARIMABaseline,
     "AR": AutoRegBaseline,
@@ -899,6 +964,7 @@ BASELINE_CLASSES = {
     "DLinear": lambda **p: TorchLinearBaseline("DLinear", **p),
     "ARKAN": ARKANBaseline,
     "Chronos": ChronosBaseline,
+    "TimesFM": TimesFMBaseline,
 }
 
 
@@ -924,6 +990,13 @@ def suggest_baseline_params(trial, model_name: str, train_length: int, horizon: 
     max_window = max(4, min(48, train_length - horizon - 2))
     if model_name == "SeasonalNaive":
         return {"seasonal_period": trial.suggest_categorical("seasonal_period", [1, 4, 12])}
+    if model_name == "Naive":
+        return {}
+    if model_name == "Theta":
+        return {
+            "period": trial.suggest_categorical("period", [1, 4, 12]),
+            "deseasonalize": trial.suggest_categorical("deseasonalize", [False, True]),
+        }
     if model_name == "ETS":
         return {
             "error": "add",
@@ -1077,7 +1150,27 @@ def evaluate_baseline(
     train = ensure_series(train_series, name="train")
     test = ensure_series(test_series, name="test")
     start = time.perf_counter()
-    model, forecast = fit_predict_baseline(model_name, train, len(test), params)
+    history = train.copy()
+    rows = []
+    model = None
+    for timestamp, observed in test.items():
+        model, one_step = fit_predict_baseline(model_name, history, 1, params)
+        out = parse_forecast_output(one_step)
+        if len(out.pred) != 1:
+            raise ValueError(f"{model_name} returned {len(out.pred)} forecasts for a one-step origin.")
+        row = {
+            "pred": float(out.pred[0]),
+            "target": float(observed),
+            "forecast_origin": history.index[-1],
+            "information_cutoff": history.index[-1],
+            "target_timestamp": timestamp,
+        }
+        if out.lower is not None and out.upper is not None:
+            row["lower"] = float(out.lower[0])
+            row["upper"] = float(out.upper[0])
+        rows.append(pd.DataFrame([row], index=[timestamp]))
+        history.loc[timestamp] = float(observed)
+    forecast = pd.concat(rows) if rows else pd.DataFrame()
     elapsed = time.perf_counter() - start
     out = parse_forecast_output(forecast)
     metrics = evaluate_forecast(

@@ -1,149 +1,128 @@
-"""Canonical S3-Forecaster implementation extracted from the research notebooks."""
+"""Canonical causal S3-Forecaster implementation."""
 
 from __future__ import annotations
 
-from typing import Any, Optional
+import warnings
+from typing import Any
 
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
-from sklearn.linear_model import ElasticNet, Lasso, Ridge
+from sklearn.linear_model import BayesianRidge, ElasticNet, Lasso, Ridge
 from sklearn.multioutput import MultiOutputRegressor
-from sklearn.preprocessing import MinMaxScaler
 
-from .utils import ensure_series, make_future_index
-
-
-class SimpleFoundationProxy:
-    """Causal rolling-trend prior with a monthly seasonal correction."""
-
-    def __init__(self, window_size: int = 6, seasonal_period: int = 12):
-        self.window_size = int(window_size)
-        self.seasonal_period = int(seasonal_period)
-
-    def fit_predict(self, series: Any, horizon: int):
-        y = ensure_series(series)
-        trend = y.rolling(window=self.window_size, min_periods=1).mean().bfill()
-        detrended = y - trend
-        future_index = make_future_index(y, horizon)
-
-        if isinstance(y.index, pd.DatetimeIndex) and len(y) > self.seasonal_period:
-            seasonal = detrended.groupby(y.index.month).mean()
-            future_season = np.asarray(
-                [float(seasonal.get(timestamp.month, 0.0)) for timestamp in future_index],
-                dtype=float,
-            )
-        elif len(y) > self.seasonal_period:
-            pattern = np.asarray(
-                [detrended.iloc[k :: self.seasonal_period].mean() for k in range(self.seasonal_period)],
-                dtype=float,
-            )
-            last_position = len(y) - 1
-            future_season = np.asarray(
-                [pattern[(last_position + h + 1) % self.seasonal_period] for h in range(horizon)],
-                dtype=float,
-            )
-        else:
-            future_season = np.full(horizon, float(detrended.mean()))
-
-        forecast = float(trend.iloc[-1]) + future_season
-        return trend, pd.Series(forecast, index=future_index, name="foundation")
+from .conformal import SequentialACI
+from .priors import (
+    CausalPrior,
+    SimpleFoundationProxy,
+    build_prior,
+    ensure_causal_prior,
+    normalize_prior_name,
+)
+from .preprocessing import FrozenRobustScaler
+from .residual_features import EchoStateResidualTransformer
+from .selection import AdapterSelectionRule, residual_predictability_score
+from .utils import ensure_series
 
 
-class EchoStateFeatureExtractor:
-    """Fixed-weight reservoir used as a nonlinear residual feature map."""
-
-    def __init__(
-        self,
-        reservoir_size: int = 50,
-        spectral_radius: float = 0.9,
-        seed: int = 42,
-    ):
-        self.reservoir_size = int(reservoir_size)
-        self.spectral_radius = float(spectral_radius)
-        self.seed = int(seed)
-        self.rng = np.random.RandomState(self.seed)
-        self.scaler = MinMaxScaler(feature_range=(-1, 1))
-        self.Win: Optional[np.ndarray] = None
-        self.Wres: Optional[np.ndarray] = None
-
-    def _init_weights(self) -> None:
-        self.Win = self.rng.uniform(-1, 1, (self.reservoir_size, 1))
-        matrix = self.rng.normal(0, 1, (self.reservoir_size, self.reservoir_size))
-        eigenvalues = np.linalg.eigvals(matrix)
-        max_eigenvalue = float(np.max(np.abs(eigenvalues)))
-        if max_eigenvalue <= 0:
-            max_eigenvalue = 1.0
-        self.Wres = matrix * (self.spectral_radius / max_eigenvalue)
-
-    def transform(self, residuals: Any) -> np.ndarray:
-        residuals = np.asarray(residuals, dtype=float).reshape(-1)
-        if self.Win is None or self.Wres is None:
-            self._init_weights()
-
-        scaled = self.scaler.fit_transform(residuals.reshape(-1, 1)).reshape(-1)
-        states = np.zeros((len(residuals), self.reservoir_size), dtype=float)
-        hidden = np.zeros(self.reservoir_size, dtype=float)
-        for t, value in enumerate(scaled):
-            hidden = np.tanh(self.Win[:, 0] * value + self.Wres @ hidden)
-            states[t] = hidden
-        return states
+EchoStateFeatureExtractor = EchoStateResidualTransformer
 
 
 class S3Forecaster:
-    """Selective shock-aware small-data forecaster.
-
-    The trainable part is a regularized multi-output residual readout. The
-    reservoir is fixed. A volatility gate and adaptive conformal calibration
-    are estimated on a chronological out-of-bag block.
-    """
+    """Small-data residual adapter with a deterministic ESN representation."""
 
     def __init__(
         self,
         reservoir_size: int = 50,
         spectral_radius: float = 0.9,
+        leak_rate: float = 0.5,
         ar_lags: int = 3,
-        horizon: int = 12,
+        horizon: int = 1,
         aci_step_size: float = 0.05,
         foundation_window: int = 6,
+        prior_name: str = "causal_rolling_mean",
+        prior_params: dict[str, Any] | None = None,
         regressor_type: str = "Ridge",
         reg_alpha: float = 1.0,
-        oob_split_ratio: float = 0.7,
+        calibration_split_ratio: float = 0.7,
+        oob_split_ratio: float | None = None,
         target_miscoverage: float = 0.10,
         seed: int = 42,
-        foundation: Optional[Any] = None,
+        foundation: CausalPrior | None = None,
+        use_residual_adapter: bool = True,
+        use_volatility_gate: bool = True,
+        use_aci: bool = True,
+        use_adapter_selector: bool = True,
+        disabled_groups: set[str] | None = None,
+        selection_r2_threshold: float = -np.inf,
+        selection_minimum_improvement: float = -np.inf,
+        selection_complexity_penalty: float = 0.0,
     ):
+        if oob_split_ratio is not None:
+            warnings.warn(
+                "oob_split_ratio is deprecated; use calibration_split_ratio.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            calibration_split_ratio = float(oob_split_ratio)
+
         self.reservoir_size = int(reservoir_size)
-        self.spectral_radius = float(spectral_radius)
+        self.spectral_radius = float(min(max(spectral_radius, 1e-6), 0.999))
+        self.leak_rate = float(leak_rate)
         self.ar_lags = int(ar_lags)
         self.horizon = int(horizon)
         self.aci_step_size = float(aci_step_size)
         self.foundation_window = int(foundation_window)
+        self.prior_name = normalize_prior_name(str(prior_name))
+        self.prior_params = dict(prior_params or {})
         self.regressor_type = str(regressor_type)
         self.reg_alpha = float(reg_alpha)
-        self.oob_split_ratio = float(oob_split_ratio)
+        self.calibration_split_ratio = float(calibration_split_ratio)
         self.target_miscoverage = float(target_miscoverage)
         self.seed = int(seed)
+        self.foundation = foundation
+        self.use_residual_adapter = bool(use_residual_adapter)
+        self.use_volatility_gate = bool(use_volatility_gate)
+        self.use_aci = bool(use_aci)
+        self.use_adapter_selector = bool(use_adapter_selector)
+        self.disabled_groups = set(disabled_groups or set())
+        self.selection_rule = AdapterSelectionRule(
+            r2_threshold=selection_r2_threshold,
+            minimum_improvement=selection_minimum_improvement,
+            complexity_penalty=selection_complexity_penalty,
+        )
 
-        self.foundation = foundation or SimpleFoundationProxy(window_size=self.foundation_window)
-        self.esn = EchoStateFeatureExtractor(
+        self.transformer = EchoStateResidualTransformer(
             reservoir_size=self.reservoir_size,
             spectral_radius=self.spectral_radius,
+            leak_rate=self.leak_rate,
+            ar_lags=self.ar_lags,
             seed=self.seed,
         )
+        self.volatility_scaler_ = FrozenRobustScaler()
         self.readout = self._build_readout()
-
-        self.gate_alpha = 1.0
-        self.gate_beta = 0.0
-        self.vol_stats: Optional[tuple[float, float]] = None
-        self.conformity_scores = np.asarray([], dtype=float)
-        self.current_alpha_t = self.target_miscoverage
+        self.aci_ = SequentialACI(
+            target_miscoverage=self.target_miscoverage,
+            step_size=self.aci_step_size,
+        )
         self.fitted = False
         self.fit_report_: dict[str, Any] = {}
+        self.selector_report_: dict[str, Any] = {}
+
+    def _make_prior(self) -> CausalPrior:
+        if self.foundation is not None:
+            prior = self.foundation.clone() if hasattr(self.foundation, "clone") else self.foundation
+            return ensure_causal_prior(prior)
+        params = dict(self.prior_params)
+        if self.prior_name == "causal_rolling_mean" and "window_size" not in params:
+            params["window_size"] = self.foundation_window
+        return build_prior(self.prior_name, **params)
 
     def _build_readout(self) -> MultiOutputRegressor:
         if self.regressor_type == "Ridge":
             base = Ridge(alpha=self.reg_alpha)
+        elif self.regressor_type == "BayesianRidge":
+            base = BayesianRidge()
         elif self.regressor_type == "Lasso":
             base = Lasso(alpha=self.reg_alpha, max_iter=10000)
         elif self.regressor_type == "ElasticNet":
@@ -152,181 +131,259 @@ class S3Forecaster:
             raise ValueError(f"Unknown regressor_type={self.regressor_type!r}.")
         return MultiOutputRegressor(base)
 
-    def _compute_volatility_z(self, residuals: Any) -> np.ndarray:
-        volatility = pd.Series(np.asarray(residuals, dtype=float)).ewm(span=4).std().fillna(0).to_numpy()
-        if self.vol_stats is None:
-            iqr = float(np.percentile(volatility, 75) - np.percentile(volatility, 25))
-            if iqr <= 0:
-                iqr = 1.0
-            self.vol_stats = (float(np.median(volatility)), iqr + 1e-6)
-        median, iqr = self.vol_stats
-        return (volatility - median) / (iqr / 1.35)
+    @staticmethod
+    def _volatility(residuals: Any) -> np.ndarray:
+        return (
+            pd.Series(np.asarray(residuals, dtype=float).reshape(-1))
+            .ewm(span=4, adjust=False)
+            .std()
+            .fillna(0.0)
+            .to_numpy()
+        )
 
-    def _get_gate(self, residuals: Any, alpha: float, beta: float) -> np.ndarray:
-        z = self._compute_volatility_z(residuals)
-        alpha = float(np.clip(alpha, 0.01, 50.0))
-        logits = np.clip(alpha * (z - beta), -50.0, 50.0)
-        return 1.0 / (1.0 + np.exp(-logits))
+    def _volatility_z(self, residuals: Any) -> np.ndarray:
+        return self.volatility_scaler_.transform(self._volatility(residuals)).reshape(-1)
+
+    def _gate(self, z_value: float) -> float:
+        logits = np.clip(self.gate_alpha_ * (float(z_value) - self.gate_beta_), -50.0, 50.0)
+        return float(1.0 / (1.0 + np.exp(-logits)))
 
     def create_features(self, residuals: Any) -> np.ndarray:
-        residuals = np.asarray(residuals, dtype=float).reshape(-1)
-        esn_states = self.esn.transform(residuals)
-        autoregressive = np.zeros((len(residuals), self.ar_lags), dtype=float)
-        for index in range(self.ar_lags, len(residuals)):
-            autoregressive[index] = residuals[index - self.ar_lags : index][::-1]
-        return np.hstack([esn_states, autoregressive])
+        x_all = self.transformer.transform(residuals)
+        names = list(getattr(self.transformer, "feature_names_", []))
+        groups = list(getattr(self.transformer, "feature_groups_", []))
+        if not self.disabled_groups:
+            self.feature_names_ = names
+            self.feature_groups_ = groups
+            return x_all
+        keep = np.asarray([group not in self.disabled_groups for group in groups], dtype=bool)
+        if len(keep) != x_all.shape[1] or keep.sum() == 0:
+            self.feature_names_ = ["constant_zero"]
+            self.feature_groups_ = ["constant"]
+            return np.zeros((len(x_all), 1), dtype=float)
+        self.feature_names_ = [name for name, flag in zip(names, keep) if flag]
+        self.feature_groups_ = [group for group, flag in zip(groups, keep) if flag]
+        return x_all[:, keep]
+
+    def _calibration_predictions(
+        self,
+        train_block: pd.Series,
+        calibration_block: pd.Series,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        prior = self._make_prior().fit(train_block)
+        residual_history = (
+            train_block.to_numpy(dtype=float)
+            - prior.fitted_values().to_numpy(dtype=float)
+        ).tolist()
+        base_values: list[float] = []
+        raw_values: list[float] = []
+        target_residuals: list[float] = []
+        z_values: list[float] = []
+
+        for obs in calibration_block.to_numpy(dtype=float):
+            base = float(prior.predict(1).iloc[0])
+            x_last = self.create_features(residual_history)[-1].reshape(1, -1)
+            raw = float(self.readout.predict(x_last)[0, 0])
+            z = float(self._volatility_z(residual_history)[-1])
+            target_residual = float(obs - base)
+            base_values.append(base)
+            raw_values.append(raw)
+            target_residuals.append(target_residual)
+            z_values.append(z)
+            prior.update(float(obs))
+            residual_history.append(target_residual)
+
+        return (
+            np.asarray(base_values, dtype=float),
+            np.asarray(raw_values, dtype=float),
+            np.asarray(target_residuals, dtype=float),
+            np.asarray(z_values, dtype=float),
+        )
 
     def fit(self, series: Any):
         y = ensure_series(series)
         n = len(y)
-        split_index = int(n * self.oob_split_ratio)
-        split_index = max(split_index, self.ar_lags + self.horizon + 2)
-        split_index = min(split_index, n - self.horizon - 1)
-
-        self.fitted = False
+        min_required = self.ar_lags + 8
+        split_index = int(np.clip(int(n * self.calibration_split_ratio), self.ar_lags + 4, n - 2))
         self.fit_report_ = {
-            "n": n,
-            "split_index": split_index,
-            "horizon": self.horizon,
+            "n": int(n),
+            "split_index": int(split_index),
+            "horizon": int(self.horizon),
             "status": "initializing",
+            "prior_name": self.prior_name,
         }
-
-        if split_index <= self.ar_lags or n < self.ar_lags + self.horizon + 5:
+        self.fitted = False
+        if n < min_required or split_index <= self.ar_lags + 2:
             self.fit_report_["status"] = "insufficient_data"
             return self
 
-        train = y.iloc[:split_index]
-        base_train, _ = self.foundation.fit_predict(train, self.horizon)
-        base_train = ensure_series(base_train).reindex(train.index).ffill().bfill()
-        residual_train = train.to_numpy() - base_train.to_numpy()
+        train_block = y.iloc[:split_index]
+        calibration_block = y.iloc[split_index:]
+        train_prior = self._make_prior().fit(train_block)
+        train_residual = train_block.to_numpy(dtype=float) - train_prior.fitted_values().to_numpy(dtype=float)
 
-        x_train = self.create_features(residual_train)
-        y_train = np.full((len(residual_train), self.horizon), np.nan, dtype=float)
-        for i in range(len(residual_train) - self.horizon):
-            y_train[i] = residual_train[i + 1 : i + 1 + self.horizon]
-
-        valid = np.isfinite(y_train).all(axis=1)
-        valid[: self.ar_lags] = False
-        if int(valid.sum()) < 2:
+        self.transformer.fit(train_residual)
+        x_train = self.create_features(train_residual)
+        y_train = np.roll(train_residual, -1)
+        valid = np.arange(len(train_residual) - 1)
+        valid = valid[valid >= self.ar_lags]
+        if len(valid) < 2:
             self.fit_report_["status"] = "insufficient_readout_samples"
             return self
 
         self.readout = self._build_readout()
-        self.readout.fit(x_train[valid], y_train[valid])
+        self.readout.fit(x_train[valid], y_train[valid].reshape(-1, 1))
+        self.volatility_scaler_.fit(self._volatility(train_residual))
 
-        full_base, _ = self.foundation.fit_predict(y, self.horizon)
-        full_base = ensure_series(full_base).reindex(y.index).ffill().bfill()
-        full_residual = y.to_numpy() - full_base.to_numpy()
-        x_full = self.create_features(full_residual)
-        calibration_indices = np.arange(split_index, n - self.horizon)
-
-        self.last_series = y
-        self.last_residuals = full_residual
-        self.full_base_fit_ = full_base
-        self.X_full_ = x_full
-
-        if len(calibration_indices) == 0:
-            self.fit_report_["status"] = "fit_without_calibration"
-            self.fitted = True
-            return self
-
-        y_calibration = np.asarray(
-            [full_residual[i + 1 : i + 1 + self.horizon] for i in calibration_indices],
-            dtype=float,
-        )
-        raw_calibration = self.readout.predict(x_full[calibration_indices])
-        z_calibration = self._compute_volatility_z(full_residual)[calibration_indices]
-
-        def gate_loss(parameters: np.ndarray) -> float:
-            alpha, beta = parameters
-            alpha = float(np.clip(alpha, 0.01, 20.0))
-            gate = 1.0 / (1.0 + np.exp(-np.clip(alpha * (z_calibration - beta), -50, 50)))
-            return float(np.mean(np.abs(y_calibration - raw_calibration * gate[:, None])))
-
-        optimum = minimize(gate_loss, [1.0, 0.0], bounds=[(0.1, 10.0), (-3.0, 3.0)])
-        self.gate_alpha, self.gate_beta = map(float, optimum.x)
-
-        gate = 1.0 / (
-            1.0
-            + np.exp(
-                -np.clip(self.gate_alpha * (z_calibration - self.gate_beta), -50, 50)
+        if len(calibration_block) > 0:
+            base_cal, raw_cal, target_resid_cal, z_cal = self._calibration_predictions(
+                train_block,
+                calibration_block,
             )
-        )
-        score_matrix = np.abs(y_calibration - raw_calibration * gate[:, None])
-        alpha_t = self.target_miscoverage
-        flattened_buffer: list[float] = []
-        for row in score_matrix:
-            row_score = float(np.max(row))
-            if len(flattened_buffer) >= 2:
-                q = float(np.quantile(flattened_buffer, 1.0 - alpha_t))
-                miss = int(row_score > q)
-                alpha_t += self.aci_step_size * (self.target_miscoverage - miss)
-                alpha_t = float(np.clip(alpha_t, 0.01, 0.50))
-            flattened_buffer.append(row_score)
 
-        self.current_alpha_t = alpha_t
-        self.conformity_scores = np.asarray(flattened_buffer, dtype=float)
+            def gate_loss(params: np.ndarray) -> float:
+                alpha, beta = params
+                logits = np.clip(float(alpha) * (z_cal - float(beta)), -50.0, 50.0)
+                gate = 1.0 / (1.0 + np.exp(-logits))
+                return float(np.mean(np.abs(target_resid_cal - raw_cal * gate)))
+
+            optimum = minimize(gate_loss, [1.0, 0.0], bounds=[(0.01, 20.0), (-5.0, 5.0)])
+            self.gate_alpha_, self.gate_beta_ = map(float, optimum.x)
+            if self.use_volatility_gate:
+                gate = 1.0 / (1.0 + np.exp(-np.clip(self.gate_alpha_ * (z_cal - self.gate_beta_), -50.0, 50.0)))
+            else:
+                gate = np.ones_like(raw_cal)
+            adapted = base_cal + raw_cal * gate
+            self.aci_ = SequentialACI(self.target_miscoverage, self.aci_step_size).fit_calibration(
+                calibration_block.to_numpy(dtype=float),
+                adapted,
+            )
+            prior_loss = float(np.mean(np.abs(calibration_block.to_numpy(dtype=float) - base_cal)))
+            adapted_loss = float(np.mean(np.abs(calibration_block.to_numpy(dtype=float) - adapted)))
+            r2_res_cal = residual_predictability_score(target_resid_cal, raw_cal)
+            self.selector_report_ = self.selection_rule.decide(
+                r2_res_cal=r2_res_cal,
+                delta_cal=prior_loss - adapted_loss,
+                prior_loss=prior_loss,
+                adapted_loss=adapted_loss,
+                reason_prefix="s3_calibration",
+            )
+            if not self.use_residual_adapter:
+                self.selector_report_["activated"] = False
+                self.selector_report_["reason"] = "adapter_disabled_by_ablation"
+            elif not self.use_adapter_selector:
+                self.selector_report_["activated"] = True
+                self.selector_report_["reason"] = "adapter_selector_disabled_by_ablation"
+        else:
+            self.gate_alpha_, self.gate_beta_ = 1.0, 0.0
+            self.aci_ = SequentialACI(self.target_miscoverage, self.aci_step_size)
+            self.selector_report_ = {
+                "activated": bool(self.use_residual_adapter),
+                "reason": "no_calibration_block",
+            }
+
+        self.prior_ = self._make_prior().fit(y)
+        self.last_series = y.copy()
+        self.last_prediction_: dict[str, float] | None = None
         self.fit_report_.update(
             {
                 "status": "success",
-                "n_readout_samples": int(valid.sum()),
-                "n_calibration_samples": int(len(calibration_indices)),
-                "n_features": int(x_full.shape[1]),
+                "n_readout_samples": int(len(valid)),
+                "n_calibration_samples": int(len(calibration_block)),
+                "n_features": int(x_train.shape[1]),
+                "achieved_spectral_radius": self.transformer.achieved_spectral_radius_,
             }
         )
         self.fitted = True
         return self
 
-    def predict(self) -> pd.DataFrame:
+    def _residual_history(self) -> np.ndarray:
+        return self.last_series.to_numpy(dtype=float) - self.prior_.fitted_values().to_numpy(dtype=float)
+
+    def predict_one(self) -> pd.DataFrame:
         if not self.fitted:
             raise RuntimeError(f"S3Forecaster is not fitted: {self.fit_report_}.")
-
-        _, base_forecast = self.foundation.fit_predict(self.last_series, self.horizon)
-        base_forecast = ensure_series(base_forecast, name="base")
-        x_last = self.create_features(self.last_residuals)[-1].reshape(1, -1)
-        residual_prediction = self.readout.predict(x_last)[0]
-        gate_value = float(
-            self._get_gate(self.last_residuals, self.gate_alpha, self.gate_beta)[-1]
-        )
-        prediction = base_forecast.to_numpy() + residual_prediction * gate_value
-
-        width = (
-            float(np.quantile(self.conformity_scores, 1.0 - self.current_alpha_t))
-            if len(self.conformity_scores)
-            else 0.0
-        )
+        base_forecast = self.prior_.predict(1)
+        base = float(base_forecast.iloc[0])
+        residuals = self._residual_history()
+        raw = float(self.readout.predict(self.create_features(residuals)[-1].reshape(1, -1))[0, 0])
+        gate = self._gate(float(self._volatility_z(residuals)[-1])) if self.use_volatility_gate else 1.0
+        residual_correction = gate * raw if self.selector_report_.get("activated", False) else 0.0
+        pred = float(base + residual_correction)
+        lower, upper = self.aci_.interval(pred) if self.use_aci else (pred, pred)
+        self.last_prediction_ = {"base": base, "pred": pred, "raw": raw, "gate": gate}
         return pd.DataFrame(
             {
-                "base": base_forecast.to_numpy(),
-                "pred": prediction,
-                "lower": prediction - width,
-                "upper": prediction + width,
-                "gate": gate_value,
-                "q_width": width,
+                "base": [base],
+                "pred": [pred],
+                "lower": [lower],
+                "upper": [upper],
+                "gate": [gate],
+                "residual_raw": [raw],
+                "residual_corrected": [residual_correction],
+                "q_width": [upper - pred],
             },
             index=base_forecast.index,
         )
 
+    def update(self, observation: float):
+        if self.last_prediction_ is not None:
+            self.aci_.update(float(observation), float(self.last_prediction_["pred"]))
+        self.prior_.update(float(observation))
+        next_index = self.prior_.fitted_values().index[-1]
+        self.last_series.loc[next_index] = float(observation)
+        self.last_prediction_ = None
+        return self
+
+    def predict(self, steps: int | None = None, recursive: bool = True) -> pd.DataFrame:
+        steps = int(steps or self.horizon)
+        rows = []
+        for _ in range(steps):
+            row = self.predict_one()
+            rows.append(row)
+            self.update(float(row["pred"].iloc[0]))
+        return pd.concat(rows)
+
+    def get_point_components(self) -> dict[str, float]:
+        return dict(self.last_prediction_ or {})
+
+    @property
+    def conformity_scores(self) -> np.ndarray:
+        return np.asarray(self.aci_.scores, dtype=float)
+
+    @property
+    def current_alpha_t(self) -> float:
+        return float(self.aci_.alpha_t)
+
     def trainable_parameter_count(self) -> int:
         total = 0
         for estimator in getattr(self.readout, "estimators_", []):
-            total += np.asarray(estimator.coef_).size
-            total += np.asarray(estimator.intercept_).size
-        if self.fitted:
-            total += 2  # optimized gate alpha and beta
-        return int(total)
+            total += np.asarray(getattr(estimator, "coef_", [])).size
+            total += np.asarray(getattr(estimator, "intercept_", [])).size
+        return int(total + 2)
 
     def summary(self) -> dict[str, Any]:
         return {
             "fitted": self.fitted,
             "fit_report": dict(self.fit_report_),
-            "gate_alpha": self.gate_alpha,
-            "gate_beta": self.gate_beta,
+            "selector_report": dict(self.selector_report_),
+            "prior_name": self.prior_name,
+            "prior_params": dict(self.prior_params),
+            "disabled_groups": sorted(self.disabled_groups),
+            "use_adapter_selector": self.use_adapter_selector,
+            "reservoir_size": self.reservoir_size,
+            "achieved_spectral_radius": getattr(self.transformer, "achieved_spectral_radius_", np.nan),
+            "leak_rate": self.leak_rate,
+            "feature_dim": self.fit_report_.get("n_features"),
+            "readout_samples": self.fit_report_.get("n_readout_samples"),
+            "calibration_samples": self.fit_report_.get("n_calibration_samples"),
+            "seed": self.seed,
+            "gate_alpha": getattr(self, "gate_alpha_", np.nan),
+            "gate_beta": getattr(self, "gate_beta_", np.nan),
             "current_alpha_t": self.current_alpha_t,
             "n_conformity_scores": len(self.conformity_scores),
             "trainable_params": self.trainable_parameter_count(),
         }
 
 
-# Backward-compatible name retained from the notebooks.
 S3ForecasterV6 = S3Forecaster

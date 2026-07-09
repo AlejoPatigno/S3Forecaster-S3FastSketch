@@ -49,6 +49,27 @@ def point_metrics(y_true: Any, y_pred: Any, eps: float = 1e-5) -> dict[str, floa
     }
 
 
+def mase(y_true: Any, y_pred: Any, y_train: Any, seasonal_period: int = 12) -> float:
+    yt = to_1d_array(y_true)
+    yp = to_1d_array(y_pred)
+    scale = seasonal_naive_scale(y_train, seasonal_period=seasonal_period)
+    return float(np.mean(np.abs(yt - yp)) / scale)
+
+
+def rmsse(y_true: Any, y_pred: Any, y_train: Any, seasonal_period: int = 12) -> float:
+    yt = to_1d_array(y_true)
+    yp = to_1d_array(y_pred)
+    scale = seasonal_naive_squared_scale(y_train, seasonal_period=seasonal_period)
+    return float(np.sqrt(np.mean((yt - yp) ** 2) / scale))
+
+
+def wape(y_true: Any, y_pred: Any, eps: float = 1e-8, percentage: bool = True) -> float:
+    yt = to_1d_array(y_true)
+    yp = to_1d_array(y_pred)
+    value = float(np.sum(np.abs(yt - yp)) / max(float(np.sum(np.abs(yt))), float(eps)))
+    return float(100.0 * value if percentage else value)
+
+
 def seasonal_naive_scale(y_train: Any, seasonal_period: int = 12) -> float:
     y = to_1d_array(y_train)
     m = max(1, int(seasonal_period))
@@ -62,6 +83,23 @@ def seasonal_naive_scale(y_train: Any, seasonal_period: int = 12) -> float:
     if not np.isfinite(scale) or scale <= 1e-8:
         scale = np.nanstd(y)
     if not np.isfinite(scale) or scale <= 1e-8:
+        scale = 1.0
+    return float(scale)
+
+
+def seasonal_naive_squared_scale(y_train: Any, seasonal_period: int = 12) -> float:
+    y = to_1d_array(y_train)
+    m = max(1, int(seasonal_period))
+    if len(y) > m:
+        scale = np.mean((y[m:] - y[:-m]) ** 2)
+    elif len(y) > 1:
+        scale = np.mean(np.diff(y) ** 2)
+    else:
+        scale = 1.0
+
+    if not np.isfinite(scale) or scale <= 1e-12:
+        scale = np.nanvar(y)
+    if not np.isfinite(scale) or scale <= 1e-12:
         scale = 1.0
     return float(scale)
 
@@ -133,6 +171,24 @@ def evaluate_forecast(
     trainable_params: Optional[int] = None,
 ) -> dict[str, float]:
     result = point_metrics(y_true, y_pred, eps=eps)
+    result["wape_percent"] = wape(y_true, y_pred, eps=eps, percentage=True)
+    result["wape"] = wape(y_true, y_pred, eps=eps, percentage=False)
+    if y_train is not None:
+        result["mase"] = mase(
+            y_true,
+            y_pred,
+            y_train,
+            seasonal_period=seasonal_period,
+        )
+        result["rmsse"] = rmsse(
+            y_true,
+            y_pred,
+            y_train,
+            seasonal_period=seasonal_period,
+        )
+    else:
+        result["mase"] = np.nan
+        result["rmsse"] = np.nan
     if lower is not None and upper is not None:
         if y_train is None:
             raise ValueError("y_train is required to calculate MSIS.")
@@ -176,6 +232,9 @@ def paper_metric_row(model_name: str, metrics: dict[str, float]) -> dict[str, fl
         "R^2": metrics.get("r2", np.nan),
         "MAPE (%)": metrics.get("mape_percent", np.nan),
         "sMAPE (%)": metrics.get("smape_percent", np.nan),
+        "WAPE (%)": metrics.get("wape_percent", np.nan),
+        "MASE": metrics.get("mase", np.nan),
+        "RMSSE": metrics.get("rmsse", np.nan),
         "Time (s)": metrics.get("elapsed_seconds", np.nan),
         "trainable_params": metrics.get("trainable_params", np.nan),
         "ECP": metrics.get("ecp", np.nan),
