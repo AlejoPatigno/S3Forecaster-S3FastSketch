@@ -1,0 +1,6 @@
+# Optional neural baselines.
+tensorflow>=2.13
+# Install torch using the wheel matching the available CPU/CUDA runtime when needed.
+torch>=2.1
+# Optional autoregressive KAN baseline.
+pykan

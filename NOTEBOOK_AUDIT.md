@@ -128,10 +128,11 @@ dataset `alejopatio/s3forecaster-s3fastsketch-source` was also uploaded, but the
 notebook does not depend exclusively on it because of the embedded package
 fallback.
 
-## Validation status
+## Current package validation status
 
 - All package modules pass Python bytecode compilation.
-- Core S3-Forecaster and S3-FastSketch training, prediction, interval generation, metric calculation, and parameter counting were executed end-to-end on a synthetic monthly series.
-- The five current dataset notebooks under `notebooks/` parse successfully, contain 230 cells total, have 0 saved outputs, have 0 execution counts, and include the methodology-contract prior-registry smoke check.
-- The current notebooks use `calibration_split_ratio`, `causal_rolling_mean`, namespaced `prior__*` parameters, and the package conformal quantile implementation instead of local `np.quantile` copies.
-- Optional TensorFlow, PyTorch, Prophet, Chronos, and KAN paths were kept behind lazy imports and require their corresponding external packages and model APIs for execution.
+- Package tests pass with 27 collected tests.
+- Core S3-Forecaster and S3-FastSketch training, prediction, interval generation, metric calculation, result-store generation, and parameter counting were executed end-to-end on synthetic monthly series.
+- Dataset notebooks were not executed in the current package-only repair task.
+- Kaggle experiments were not executed in the current package-only repair task.
+- Optional TensorFlow, PyTorch, Prophet, Chronos, TimesFM, and KAN paths require their corresponding external packages and model APIs for execution.

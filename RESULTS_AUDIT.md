@@ -14,6 +14,7 @@ Every future result table must be regenerated from the canonical package path:
 - residual features from `s3paper/residual_features.py`;
 - rolling test forecasts from `s3paper/rolling_evaluation.py`;
 - metrics from `s3paper/metrics.py`.
+- canonical per-origin rows from `s3paper/result_store.py`.
 
 Any old/new discrepancy must record:
 
@@ -40,5 +41,11 @@ python -m pytest -q
 Result:
 
 ```text
-20 passed
+27 passed
 ```
+
+## Execution Boundary
+
+Notebooks were not executed in this package repair task.
+Kaggle experiments were not executed in this package repair task.
+Final paper results were not regenerated.

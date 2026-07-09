@@ -97,6 +97,7 @@ def optimize_s3_uq(
     seasonal_period: int = 12,
     penalty_strength: float = 100.0,
     seed: int = 42,
+    optimize_nominal_level: bool = False,
 ):
     """Optimize uncertainty parameters using only train/validation data."""
 
@@ -106,9 +107,14 @@ def optimize_s3_uq(
     if len(full) <= val_size + 15:
         val_size = max(3, len(full) // 4)
     train, validation = temporal_holdout(full, val_size)
+    fixed_alpha = 1.0 - float(target_coverage)
 
     def objective(trial: optuna.Trial) -> float:
-        target_miscoverage = trial.suggest_float("target_miscoverage", 0.01, 0.20)
+        target_miscoverage = (
+            trial.suggest_float("target_miscoverage", 0.01, 0.20)
+            if optimize_nominal_level
+            else fixed_alpha
+        )
         aci_step_size = trial.suggest_float("aci_step_size", 0.005, 0.20, log=True)
         interval_scale = trial.suggest_float("interval_scale", 0.5, 8.0, log=True)
         try:
@@ -116,6 +122,8 @@ def optimize_s3_uq(
             params["aci_step_size"] = aci_step_size
             trial.set_user_attr("prior_name", prior_name)
             trial.set_user_attr("prior_params", prior_params)
+            trial.set_user_attr("requested_nominal_coverage", target_coverage)
+            trial.set_user_attr("effective_target_coverage", 1.0 - target_miscoverage)
             model = S3Forecaster(
                 horizon=1,
                 target_miscoverage=target_miscoverage,
@@ -176,6 +184,7 @@ def evaluate_s3_forecaster(
     if "aci_step_size" in uq_params:
         params["aci_step_size"] = uq_params["aci_step_size"]
     target_miscoverage = float(uq_params.get("target_miscoverage", alpha))
+    target_miscoverage = float(alpha) if not bool(uq_params.get("optimize_nominal_level", False)) else target_miscoverage
 
     model = S3Forecaster(horizon=1, target_miscoverage=target_miscoverage, **params)
     start = time.perf_counter()

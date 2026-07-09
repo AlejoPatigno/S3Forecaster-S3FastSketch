@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import Ridge
 
+from .calibration import split_internal_calibration
 from .conformal import SequentialACI
 from .priors import SimpleFoundationProxy, build_prior, ensure_causal_prior, normalize_prior_name
 from .residual_features import FastSketchResidualTransformer
@@ -186,22 +187,29 @@ class S3FastSketchForecaster:
         n = len(series)
         self.fitted = False
         self.gamma_ = None
-        split_idx = int(np.clip(int(n * self.calibration_split_ratio), self.ar_lags + self.min_train_samples, n - self.min_calib_samples))
         self.fit_report_ = {
             "n": int(n),
             "horizon": int(self.horizon),
-            "split_idx": int(split_idx),
             "reason": "initializing",
             "prior_name": self.prior_name,
         }
 
-        min_required = self.ar_lags + self.min_train_samples + self.min_calib_samples + 2
-        if n < min_required or split_idx >= n:
-            self.fit_report_["reason"] = f"insufficient_data: n={n}, required={min_required}"
+        try:
+            split = split_internal_calibration(
+                series,
+                readout_ratio=self.calibration_split_ratio,
+                adapter_ratio=0.20,
+                minimum_readout=self.ar_lags + self.min_train_samples,
+                minimum_adapter=self.min_calib_samples,
+                minimum_conformal=self.min_calib_samples,
+            )
+        except ValueError as exc:
+            self.fit_report_["reason"] = str(exc)
             return self
 
-        train_block = series.iloc[:split_idx]
-        calibration_block = series.iloc[split_idx:]
+        train_block = split.readout_train
+        adapter_block = split.adapter_calibration
+        conformal_block = split.conformal_calibration
         prior = self._make_prior().fit(train_block)
         residual_train = train_block.to_numpy(dtype=float) - prior.fitted_values().to_numpy(dtype=float)
         self.transformer.fit(residual_train)
@@ -216,7 +224,7 @@ class S3FastSketchForecaster:
         self.readout = Ridge(alpha=self.ridge_alpha)
         self.readout.fit(x_train[valid], y_train[valid])
 
-        base_cal, raw_cal, target_resid_cal = self._calibration_predictions(train_block, calibration_block)
+        base_cal, raw_cal, target_resid_cal = self._calibration_predictions(train_block, adapter_block)
         if len(raw_cal) < self.min_calib_samples:
             self.fit_report_["reason"] = f"calibration_block_too_small: {len(raw_cal)}"
             return self
@@ -227,13 +235,9 @@ class S3FastSketchForecaster:
             gamma = 1.0
         self.gamma_ = np.asarray([gamma], dtype=float)
         adapted = base_cal + gamma * raw_cal
-        self.aci_ = SequentialACI(self.aci_target, self.aci_step_size).fit_calibration(
-            calibration_block.to_numpy(dtype=float),
-            adapted,
-        )
 
-        prior_loss = float(np.mean(np.abs(calibration_block.to_numpy(dtype=float) - base_cal)))
-        adapted_loss = float(np.mean(np.abs(calibration_block.to_numpy(dtype=float) - adapted)))
+        prior_loss = float(np.mean(np.abs(adapter_block.to_numpy(dtype=float) - base_cal)))
+        adapted_loss = float(np.mean(np.abs(adapter_block.to_numpy(dtype=float) - adapted)))
         r2_res_cal = residual_predictability_score(target_resid_cal, raw_cal)
         self.selector_report_ = self.selection_rule.decide(
             r2_res_cal=r2_res_cal,
@@ -258,6 +262,17 @@ class S3FastSketchForecaster:
             self.selector_report_["activated"] = True
             self.selector_report_["reason"] = "adapter_selector_disabled_by_ablation"
 
+        base_conf, raw_conf, _ = self._calibration_predictions(
+            pd.concat([train_block, adapter_block]),
+            conformal_block,
+        )
+        correction_conf = gamma * raw_conf if self.selector_report_.get("activated", False) else np.zeros_like(raw_conf)
+        adapted_conf = base_conf + correction_conf
+        self.aci_ = SequentialACI(self.aci_target, self.aci_step_size).fit_calibration(
+            conformal_block.to_numpy(dtype=float),
+            adapted_conf,
+        )
+
         self.prior_ = self._make_prior().fit(series)
         self.last_series = series.copy()
         self.last_prediction_: dict[str, float] | None = None
@@ -266,7 +281,8 @@ class S3FastSketchForecaster:
                 "reason": "success",
                 "n_features": int(x_train.shape[1]),
                 "n_train_readout": int(len(valid)),
-                "n_calib": int(len(raw_cal)),
+                "n_calib": int(len(adapter_block) + len(conformal_block)),
+                **split.report(),
             }
         )
         self.fitted = True
@@ -286,7 +302,7 @@ class S3FastSketchForecaster:
         corrected = gamma * raw if self.selector_report_.get("activated", False) else 0.0
         pred = float(base + corrected)
         lower, upper = self.aci_.interval(pred) if self.use_aci else (pred, pred)
-        self.last_prediction_ = {"base": base, "pred": pred, "raw": raw, "gamma": gamma}
+        self.last_prediction_ = {"base": base, "pred": pred, "raw": raw, "gamma": gamma, "lower": lower, "upper": upper}
         return pd.DataFrame(
             {
                 "step": [1],
@@ -304,7 +320,11 @@ class S3FastSketchForecaster:
 
     def update(self, observation: float):
         if self.last_prediction_ is not None:
-            self.aci_.update(float(observation), float(self.last_prediction_["pred"]))
+            self.aci_.update(
+                float(observation),
+                float(self.last_prediction_["pred"]),
+                interval=(float(self.last_prediction_["lower"]), float(self.last_prediction_["upper"])),
+            )
         self.prior_.update(float(observation))
         next_index = self.prior_.fitted_values().index[-1]
         self.last_series.loc[next_index] = float(observation)

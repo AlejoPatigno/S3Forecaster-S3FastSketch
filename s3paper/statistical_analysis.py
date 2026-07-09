@@ -114,6 +114,48 @@ def holm_posthoc(per_series_metrics: pd.DataFrame, *, metric: str = "mase", base
     return out
 
 
+def holm_corrected_pairwise_test(per_series_metrics: pd.DataFrame, *, metric: str = "mase", baseline: str | None = None) -> pd.DataFrame:
+    """Paired t-style comparisons with Holm correction."""
+
+    return holm_posthoc(per_series_metrics, metric=metric, baseline=baseline)
+
+
+def nemenyi_posthoc(per_series_metrics: pd.DataFrame, *, metric: str = "mase") -> pd.DataFrame:
+    """Approximate Nemenyi post-hoc comparison from average ranks."""
+
+    pivot = per_series_metrics.pivot_table(index=["dataset", "series_id"], columns="model", values=metric, aggfunc="first").dropna()
+    models = list(pivot.columns)
+    if len(models) < 2 or len(pivot) < 2:
+        return pd.DataFrame(columns=["model_a", "model_b", "rank_difference", "critical_difference", "significant", "status"])
+    ranks = pivot.rank(axis=1, method="average", ascending=True)
+    avg = ranks.mean(axis=0)
+    k = len(models)
+    n = len(pivot)
+    q_alpha = 2.343 if k <= 5 else 2.569
+    cd = float(q_alpha * np.sqrt(k * (k + 1) / (6.0 * n)))
+    rows = []
+    for a, b in combinations(models, 2):
+        diff = abs(float(avg[a] - avg[b]))
+        rows.append({"model_a": a, "model_b": b, "rank_difference": diff, "critical_difference": cd, "significant": bool(diff > cd), "status": "ok"})
+    return pd.DataFrame(rows)
+
+
+def critical_difference_data(per_series_metrics: pd.DataFrame, *, metric: str = "mase") -> dict[str, Any]:
+    pivot = per_series_metrics.pivot_table(index=["dataset", "series_id"], columns="model", values=metric, aggfunc="first")
+    complete = pivot.dropna()
+    failure_counts = pivot.isna().sum().to_dict()
+    ranks = complete.rank(axis=1, method="average", ascending=True).mean(axis=0).sort_values()
+    nemenyi = nemenyi_posthoc(per_series_metrics, metric=metric)
+    return {
+        "average_ranks": ranks.reset_index().rename(columns={0: "average_rank", "model": "model"}),
+        "nemenyi": nemenyi,
+        "n_complete_series": int(len(complete)),
+        "models_included": list(complete.columns),
+        "models_excluded": [column for column in pivot.columns if column not in complete.columns],
+        "failure_counts": failure_counts,
+    }
+
+
 def paired_bootstrap_difference(
     per_series_metrics: pd.DataFrame,
     model_a: str,
