@@ -21,7 +21,7 @@ from sklearn.multioutput import MultiOutputRegressor
 from sklearn.preprocessing import StandardScaler
 
 from .chronos import chronos_predict_fixed_horizon, make_chronos_predictor
-from .conformal import SequentialACI
+from .conformal import SequentialACI, finalize_symmetric_interval
 from .metrics import evaluate_forecast
 from .preprocessing import IdentityTransformer
 from .utils import (
@@ -90,15 +90,21 @@ class ForecastBaseline:
 class TransformedForecaster:
     """Wrap a one-step forecaster with an invertible target transformation."""
 
-    def __init__(self, model: ForecastBaseline, transformer=None):
+    def __init__(self, model: ForecastBaseline | None = None, transformer=None, *, model_factory=None, transformer_factory=None):
         self.model = model
         self.transformer = transformer or IdentityTransformer()
+        self.model_factory = model_factory
+        self.transformer_factory = transformer_factory
 
     def fit(self, series: Any):
         y = ensure_series(series)
         self.series_ = y.copy()
+        if self.transformer_factory is not None:
+            self.transformer = self.transformer_factory()
         self.transformer.fit(y.to_numpy(dtype=float))
         transformed = pd.Series(self.transformer.transform(y.to_numpy(dtype=float)), index=y.index)
+        if self.model_factory is not None:
+            self.model = self.model_factory()
         self.model.fit(transformed)
         return self
 
@@ -107,7 +113,7 @@ class TransformedForecaster:
         values = self.transformer.inverse_transform(pred.to_numpy(dtype=float))
         return pd.Series(values, index=make_future_index(self.series_, int(horizon)), name="pred")
 
-    def update(self, observation: float):
+    def update(self, observation: float, *, is_observed: bool = True):
         self.series_.loc[make_future_index(self.series_, 1)[0]] = float(observation)
         return self.fit(self.series_)
 
@@ -146,12 +152,12 @@ class ConformalizedBaseline:
         split = min(split, len(y) - 3)
         history = y.iloc[:split].copy()
         preds, truth = [], []
-        for _, observed in y.iloc[split:].items():
+        for timestamp, observed in y.iloc[split:].items():
             _, one = fit_predict_baseline(self.model_name, history, 1, self.params)
             pred = float(parse_forecast_output(one).pred[0])
             preds.append(pred)
             truth.append(float(observed))
-            history.loc[_.__class__(_) if False else _] = float(observed)
+            history.loc[timestamp] = float(observed)
         self.aci_ = SequentialACI(self.alpha, self.aci_step_size).fit_calibration(truth, preds)
         self.history_ = y.copy()
         return self
@@ -159,14 +165,18 @@ class ConformalizedBaseline:
     def predict_one(self) -> pd.DataFrame:
         _, one = fit_predict_baseline(self.model_name, self.history_, 1, self.params)
         pred = float(parse_forecast_output(one).pred[0])
-        lower, upper = self.aci_.interval(pred)
-        half = max((upper - pred) * self.interval_scale, self.minimum_width)
-        lower, upper = pred - half, pred + half
+        raw_interval = self.aci_.interval(pred)
+        lower, upper, half_width = finalize_symmetric_interval(
+            pred,
+            raw_interval,
+            interval_scale=self.interval_scale,
+            minimum_width=self.minimum_width,
+        )
         self.last_prediction_ = {"pred": pred, "lower": lower, "upper": upper}
         return pd.DataFrame({"pred": [pred], "lower": [lower], "upper": [upper]}, index=make_future_index(self.history_, 1))
 
-    def update(self, observation: float):
-        if hasattr(self, "last_prediction_"):
+    def update(self, observation: float, *, is_observed: bool = True):
+        if is_observed and hasattr(self, "last_prediction_"):
             self.aci_.update(
                 float(observation),
                 float(self.last_prediction_["pred"]),

@@ -201,20 +201,21 @@ def evaluate_forecast(
     result = point_metrics(y_true, y_pred, eps=eps)
     result["wape_percent"] = wape(y_true, y_pred, eps=eps, percentage=True)
     result["wape"] = wape(y_true, y_pred, eps=eps, percentage=False)
-    if y_train is not None or mase_scale_value is not None:
-        result["mase"] = (
-            mase_from_scale(y_true, y_pred, mase_scale_value)
-            if mase_scale_value is not None
-            else mase(y_true, y_pred, y_train, seasonal_period=seasonal_period)
-        )
-        result["rmsse"] = (
-            rmsse_from_scale(y_true, y_pred, rmsse_scale_value)
-            if rmsse_scale_value is not None
-            else rmsse(y_true, y_pred, y_train, seasonal_period=seasonal_period)
-        )
-    else:
-        result["mase"] = np.nan
-        result["rmsse"] = np.nan
+    if y_train is None and mase_scale_value is None:
+        raise ValueError("y_train or mase_scale_value is required to calculate MASE.")
+    if y_train is None and rmsse_scale_value is None:
+        raise ValueError("y_train or rmsse_scale_value is required to calculate RMSSE.")
+
+    result["mase"] = (
+        mase_from_scale(y_true, y_pred, mase_scale_value)
+        if mase_scale_value is not None
+        else mase(y_true, y_pred, y_train, seasonal_period=seasonal_period)
+    )
+    result["rmsse"] = (
+        rmsse_from_scale(y_true, y_pred, rmsse_scale_value)
+        if rmsse_scale_value is not None
+        else rmsse(y_true, y_pred, y_train, seasonal_period=seasonal_period)
+    )
     if lower is not None and upper is not None:
         if y_train is None and msis_scale_value is None:
             raise ValueError("y_train is required to calculate MSIS.")
