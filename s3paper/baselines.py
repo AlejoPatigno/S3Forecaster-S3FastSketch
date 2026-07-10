@@ -140,6 +140,10 @@ class ConformalizedBaseline:
         self.aci_step_size = float(aci_step_size)
         self.interval_scale = float(interval_scale)
         self.minimum_width = float(minimum_width)
+        if self.interval_scale <= 0.0:
+            raise ValueError("interval_scale must be > 0.")
+        if self.minimum_width < 0.0:
+            raise ValueError("minimum_width must be >= 0.")
         self.aci_ = SequentialACI(self.alpha, self.aci_step_size)
 
     def fit(self, series: Any):
@@ -172,8 +176,11 @@ class ConformalizedBaseline:
             interval_scale=self.interval_scale,
             minimum_width=self.minimum_width,
         )
-        self.last_prediction_ = {"pred": pred, "lower": lower, "upper": upper}
-        return pd.DataFrame({"pred": [pred], "lower": [lower], "upper": [upper]}, index=make_future_index(self.history_, 1))
+        self.last_prediction_ = {"pred": pred, "lower": lower, "upper": upper, "half_width": half_width}
+        return pd.DataFrame(
+            {"pred": [pred], "lower": [lower], "upper": [upper], "half_width": [half_width]},
+            index=make_future_index(self.history_, 1),
+        )
 
     def update(self, observation: float, *, is_observed: bool = True):
         if is_observed and hasattr(self, "last_prediction_"):
@@ -183,6 +190,8 @@ class ConformalizedBaseline:
                 interval=(float(self.last_prediction_["lower"]), float(self.last_prediction_["upper"])),
             )
         self.history_.loc[make_future_index(self.history_, 1)[0]] = float(observation)
+        if hasattr(self, "last_prediction_"):
+            del self.last_prediction_
         return self
 
 
@@ -1269,7 +1278,7 @@ def evaluate_baseline(
             row["target_timestamp"] = timestamp
             row["interval_method"] = "common_conformal_interval"
             rows.append(row)
-            model.update(float(observed))
+            model.update(float(observed), is_observed=True)
             information_cutoff = timestamp
         forecast = pd.concat(rows) if rows else pd.DataFrame()
         elapsed = time.perf_counter() - start
@@ -1288,12 +1297,13 @@ def evaluate_baseline(
         return {"model": model, "forecast": forecast, "metrics": metrics}
 
     history = train.copy()
-    fitted_transformer = transformer.fit(train.to_numpy(dtype=float)) if transformer is not None else None
     rows = []
     model = None
     for timestamp, observed in test.items():
         fit_history = history
-        if fitted_transformer is not None:
+        fitted_transformer = None
+        if transformer is not None:
+            fitted_transformer = copy.deepcopy(transformer).fit(history.to_numpy(dtype=float))
             fit_history = pd.Series(
                 fitted_transformer.transform(history.to_numpy(dtype=float)),
                 index=history.index,

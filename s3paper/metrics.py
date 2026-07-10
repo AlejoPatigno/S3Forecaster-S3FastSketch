@@ -157,7 +157,10 @@ def interval_metrics(
     yt = to_1d_array(y_true)
     lo = to_1d_array(lower)
     up = to_1d_array(upper)
-    lo, up = np.minimum(lo, up), np.maximum(lo, up)
+    if not (len(yt) == len(lo) == len(up)):
+        raise ValueError("y_true, lower, and upper must have the same length.")
+    if np.any(lo > up):
+        raise ValueError("Interval lower bounds must be <= upper bounds.")
 
     covered = (yt >= lo) & (yt <= up)
     scores = interval_score_per_t(yt, lo, up, alpha=alpha)
@@ -198,6 +201,19 @@ def evaluate_forecast(
     rmsse_scale_value: Optional[float] = None,
     msis_scale_value: Optional[float] = None,
 ) -> dict[str, float]:
+    if len(to_1d_array(y_true)) != len(to_1d_array(y_pred)):
+        raise ValueError("y_true and y_pred must have the same length.")
+    if lower is not None and upper is None:
+        raise ValueError("upper is required when lower is provided.")
+    if upper is not None and lower is None:
+        raise ValueError("lower is required when upper is provided.")
+    if lower is not None and len(to_1d_array(lower)) != len(to_1d_array(y_true)):
+        raise ValueError("lower must have the same length as y_true.")
+    if upper is not None and len(to_1d_array(upper)) != len(to_1d_array(y_true)):
+        raise ValueError("upper must have the same length as y_true.")
+    if lower is not None and upper is not None and np.any(to_1d_array(lower) > to_1d_array(upper)):
+        raise ValueError("Interval lower bounds must be <= upper bounds.")
+
     result = point_metrics(y_true, y_pred, eps=eps)
     result["wape_percent"] = wape(y_true, y_pred, eps=eps, percentage=True)
     result["wape"] = wape(y_true, y_pred, eps=eps, percentage=False)

@@ -17,6 +17,10 @@ def finalize_symmetric_interval(
 ) -> tuple[float, float, float]:
     point = float(point_prediction)
     lower_raw, upper_raw = map(float, raw_interval)
+    if not np.isfinite(point):
+        raise ValueError(f"point_prediction must be finite, got {point_prediction}")
+    if not (np.isfinite(lower_raw) and np.isfinite(upper_raw)):
+        raise ValueError(f"raw_interval bounds must be finite, got {raw_interval}")
 
     if float(interval_scale) <= 0.0:
         raise ValueError(f"interval_scale must be > 0, got {interval_scale}")
@@ -32,7 +36,6 @@ def finalize_symmetric_interval(
     lower = point - final_half_width
     upper = point + final_half_width
 
-    # Validations
     if lower > point or upper < point:
         raise ValueError("Invalid interval generated")
     if not np.isclose(upper - point, point - lower, atol=1e-5):

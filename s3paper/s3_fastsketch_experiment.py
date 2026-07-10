@@ -125,6 +125,7 @@ def optimize_fastsketch_point(
     seasonal_period: int = 12,
     n_folds: int = 3,
     validation_size: int = 6,
+    val_size: int | None = None,
     n_trials: int = 100,
     seed: int = 42,
     prior_names: tuple[str, ...] | list[str] | None = None,
@@ -133,6 +134,8 @@ def optimize_fastsketch_point(
 ):
     import optuna
 
+    if val_size is not None:
+        validation_size = int(val_size)
     full = ensure_series(train_series)
     folds = make_expanding_window_folds(
         full,

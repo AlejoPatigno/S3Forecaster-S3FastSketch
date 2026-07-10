@@ -101,6 +101,10 @@ class S3FastSketchForecaster:
         )
         self.interval_scale = float(interval_scale)
         self.minimum_width = float(minimum_width)
+        if self.interval_scale <= 0.0:
+            raise ValueError("interval_scale must be > 0.")
+        if self.minimum_width < 0.0:
+            raise ValueError("minimum_width must be >= 0.")
         self.prior_cache = prior_cache
         self.prior_cache_context = prior_cache_context
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 import time
 
+import numpy as np
 import pandas as pd
 
 from .metrics import evaluate_forecast
@@ -21,6 +22,8 @@ def rolling_one_step_forecast(model: Any, train_series: Any, test_series: Any) -
     information_cutoff = train.index[-1]
     for target_timestamp, observation in test.items():
         start = time.perf_counter()
+        alpha_before = getattr(getattr(model, "aci_", None), "alpha_t", float("nan"))
+        scores_before = getattr(getattr(model, "aci_", None), "scores", [])
         forecast = model.predict_one().copy()
         
         if "lower" in forecast.columns and "upper" in forecast.columns:
@@ -35,6 +38,8 @@ def rolling_one_step_forecast(model: Any, train_series: Any, test_series: Any) -
                     pass # Allow small float issues
                 else:
                     raise ValueError(f"Invalid interval: lower ({l_val}) <= pred ({p_val}) <= upper ({u_val}) is violated.")
+        elif "lower" in forecast.columns or "upper" in forecast.columns:
+            raise ValueError("Forecast must include both lower and upper interval columns, or neither.")
 
         runtime_predict = time.perf_counter() - start
         forecast.index = pd.Index([target_timestamp])
@@ -43,6 +48,10 @@ def rolling_one_step_forecast(model: Any, train_series: Any, test_series: Any) -
         forecast["target_timestamp"] = target_timestamp
         forecast["target"] = float(observation)
         forecast["runtime_predict"] = runtime_predict
+        forecast["alpha_t_before_update"] = (
+            float(alpha_before) if np.isfinite(alpha_before) else np.nan
+        )
+        forecast["n_conformity_scores_before_update"] = len(scores_before)
         selector = getattr(model, "selector_report_", {}) or {}
         forecast["adapter_active"] = bool(selector.get("activated", False))
         forecast["predictability_score"] = selector.get("r2_res_cal", selector.get("predictability_score", float("nan")))

@@ -106,7 +106,14 @@ def compute_causal_prior_path(
     else:
         prior = build_prior(prior_name, **prior_params).fit(train_series)
         base_train = prior.fitted_values().to_numpy(dtype=float)
-        cache.set(train_key, {"fitted_values": base_train.tolist()})
+        cache.set(
+            train_key,
+            {
+                "fitted_values": base_train.tolist(),
+                "status": "success",
+                "forecast_index": [str(idx) for idx in train_series.index],
+            },
+        )
 
     base_cal = []
     current_history = train_series.to_numpy(dtype=float).tolist()
@@ -132,7 +139,14 @@ def compute_causal_prior_path(
                 )
             
             pred = float(prior.predict(1).iloc[0])
-            cache.set(step_key, {"forecast_values": [pred]})
+            cache.set(
+                step_key,
+                {
+                    "forecast_values": [pred],
+                    "forecast_index": [str(val_index[i])],
+                    "status": "success",
+                },
+            )
             base_cal.append(pred)
             
         current_history.append(obs)

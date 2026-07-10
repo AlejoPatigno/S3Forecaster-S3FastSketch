@@ -52,6 +52,7 @@ def optimize_s3_forecaster(
     seasonal_period: int = 12,
     n_folds: int = 3,
     validation_size: int = 6,
+    val_size: int | None = None,
     n_trials: int = 100,
     seed: int = 42,
     objective_metric: str = "paper_point",
@@ -62,6 +63,8 @@ def optimize_s3_forecaster(
 
     import optuna
 
+    if val_size is not None:
+        validation_size = int(val_size)
     full = ensure_series(train_series)
     folds = make_expanding_window_folds(
         full,

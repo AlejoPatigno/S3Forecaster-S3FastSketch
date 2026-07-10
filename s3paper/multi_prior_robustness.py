@@ -223,6 +223,8 @@ def evaluate_prior_only(
     metrics = evaluate_forecast(
         test,
         out.pred,
+        y_train=train,
+        seasonal_period=seasonal_period,
         elapsed_seconds=elapsed,
         trainable_params=0,
     )
@@ -247,9 +249,18 @@ def evaluate_s3_with_prior(
         params["calibration_split_ratio"] = params.pop("oob_split_ratio")
     if "aci_step_size" in uq:
         params["aci_step_size"] = uq["aci_step_size"]
+    minimum_width = float(uq.get("min_width_factor", 0.0)) * seasonal_naive_scale(
+        train, seasonal_period=seasonal_period
+    )
     model = S3Forecaster(
         horizon=1,
-        target_miscoverage=float(uq.get("target_miscoverage", alpha)),
+        target_miscoverage=(
+            float(uq.get("target_miscoverage", alpha))
+            if bool(uq.get("optimize_nominal_level", False))
+            else float(alpha)
+        ),
+        interval_scale=float(uq.get("interval_scale", 1.0)),
+        minimum_width=minimum_width,
         foundation=prior,
         **params,
     )
@@ -257,15 +268,17 @@ def evaluate_s3_with_prior(
     result = evaluate_rolling_model(model, train, test, seasonal_period=seasonal_period, alpha=alpha)
     forecast = result["forecast"].copy()
     elapsed = time.perf_counter() - start
-    scale = float(uq.get("interval_scale", 1.0))
-    if scale != 1.0:
-        center = forecast["pred"].to_numpy()
-        half = 0.5 * (forecast["upper"].to_numpy() - forecast["lower"].to_numpy())
-        forecast["lower"] = center - scale * half
-        forecast["upper"] = center + scale * half
-    metrics = dict(result["metrics"])
-    metrics["elapsed_seconds"] = elapsed
-    metrics["trainable_params"] = count_trainable_parameters(model)
+    metrics = evaluate_forecast(
+        test,
+        forecast["pred"],
+        y_train=train,
+        lower=forecast["lower"],
+        upper=forecast["upper"],
+        alpha=alpha,
+        seasonal_period=seasonal_period,
+        elapsed_seconds=elapsed,
+        trainable_params=count_trainable_parameters(model),
+    )
     return {"model": model, "forecast": forecast, "metrics": metrics}
 
 
@@ -296,25 +309,25 @@ def evaluate_fastsketch_with_prior(
     model = S3FastSketchForecaster(
         horizon=1,
         seasonal_period=seasonal_period,
-        aci_target=float(uq.get("aci_target", alpha)),
+        aci_target=(
+            float(uq.get("aci_target", alpha))
+            if bool(uq.get("optimize_nominal_level", False))
+            else float(alpha)
+        ),
         aci_step_size=float(uq.get("aci_step_size", 0.05)),
+        interval_scale=float(uq.get("interval_scale", 1.0)),
+        minimum_width=float(uq.get("min_width_factor", 0.0)) * seasonal_naive_scale(
+            train, seasonal_period=seasonal_period
+        ),
         min_train_samples=6,
         min_calib_samples=2,
         use_existing_simple_foundation=False,
         **params,
     )
     model.foundation = prior
-    min_width = float(uq.get("min_width_factor", 0.0)) * seasonal_naive_scale(
-        train, seasonal_period=seasonal_period
-    )
     start = time.perf_counter()
     result = evaluate_rolling_model(model, train, test, seasonal_period=seasonal_period, alpha=alpha)
     forecast = result["forecast"].copy()
-    center = forecast["pred"].to_numpy(dtype=float)
-    half = 0.5 * (forecast["upper"].to_numpy(dtype=float) - forecast["lower"].to_numpy(dtype=float))
-    half = np.maximum(float(uq.get("interval_scale", 1.0)) * half, min_width)
-    forecast["lower"] = center - half
-    forecast["upper"] = center + half
     elapsed = time.perf_counter() - start
     metrics = evaluate_forecast(
         test,
