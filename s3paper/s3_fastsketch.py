@@ -10,7 +10,7 @@ import pandas as pd
 from sklearn.linear_model import Ridge
 
 from .calibration import split_internal_calibration
-from .conformal import SequentialACI
+from .conformal import SequentialACI, finalize_symmetric_interval
 from .priors import SimpleFoundationProxy, build_prior, ensure_causal_prior, normalize_prior_name
 from .residual_features import FastSketchResidualTransformer
 from .selection import AdapterSelectionRule, residual_predictability_score
@@ -57,6 +57,10 @@ class S3FastSketchForecaster:
         selection_r2_threshold: float = -np.inf,
         selection_minimum_improvement: float = -np.inf,
         selection_complexity_penalty: float = 0.0,
+        interval_scale: float = 1.0,
+        minimum_width: float = 0.0,
+        prior_cache: Any = None,
+        prior_cache_context: dict[str, Any] | None = None,
     ):
         if oob_split_ratio is not None:
             warnings.warn(
@@ -95,6 +99,14 @@ class S3FastSketchForecaster:
             minimum_improvement=selection_minimum_improvement,
             complexity_penalty=selection_complexity_penalty,
         )
+        self.interval_scale = float(interval_scale)
+        self.minimum_width = float(minimum_width)
+        if self.interval_scale <= 0.0:
+            raise ValueError("interval_scale must be > 0.")
+        if self.minimum_width < 0.0:
+            raise ValueError("minimum_width must be >= 0.")
+        self.prior_cache = prior_cache
+        self.prior_cache_context = prior_cache_context
 
         self.transformer = FastSketchResidualTransformer(
             ar_lags=self.ar_lags,
@@ -151,23 +163,50 @@ class S3FastSketchForecaster:
         train_block: pd.Series,
         calibration_block: pd.Series,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        prior = self._make_prior().fit(train_block)
+        if not self.use_foundation_component:
+            prior = self._make_prior().fit(train_block)
+            base_train = prior.fitted_values().to_numpy(dtype=float)
+            base_cal = []
+            for obs in calibration_block.to_numpy(dtype=float):
+                base_cal.append(float(prior.predict(1).iloc[0]))
+                prior.update(float(obs))
+            base_cal = np.asarray(base_cal, dtype=float)
+        elif self.foundation is not None:
+            prior = self.foundation.clone() if hasattr(self.foundation, "clone") else self.foundation
+            from .priors import ensure_causal_prior
+            prior = ensure_causal_prior(prior).fit(train_block)
+            base_train = prior.fitted_values().to_numpy(dtype=float)
+            base_cal = []
+            for obs in calibration_block.to_numpy(dtype=float):
+                base_cal.append(float(prior.predict(1).iloc[0]))
+                prior.update(float(obs))
+            base_cal = np.asarray(base_cal, dtype=float)
+        else:
+            from .prior_cache import compute_causal_prior_path
+            base_train, base_cal = compute_causal_prior_path(
+                self.prior_name,
+                self.prior_params,
+                train_block,
+                calibration_block,
+                cache=self.prior_cache,
+                cache_context=self.prior_cache_context,
+            )
+
         residual_history = (
             train_block.to_numpy(dtype=float)
-            - prior.fitted_values().to_numpy(dtype=float)
+            - base_train
         ).tolist()
         base_values: list[float] = []
         raw_values: list[float] = []
         target_residuals: list[float] = []
-        for obs in calibration_block.to_numpy(dtype=float):
-            base = float(prior.predict(1).iloc[0])
+        for i, obs in enumerate(calibration_block.to_numpy(dtype=float)):
+            base = float(base_cal[i])
             x_last = self.create_features(residual_history)[-1].reshape(1, -1)
             raw = float(self.readout.predict(x_last)[0])
             target_residual = float(obs - base)
             base_values.append(base)
             raw_values.append(raw)
             target_residuals.append(target_residual)
-            prior.update(float(obs))
             residual_history.append(target_residual)
         return (
             np.asarray(base_values, dtype=float),
@@ -301,8 +340,14 @@ class S3FastSketchForecaster:
         gamma = float(self.gamma_[0]) if self.gamma_ is not None else 0.0
         corrected = gamma * raw if self.selector_report_.get("activated", False) else 0.0
         pred = float(base + corrected)
-        lower, upper = self.aci_.interval(pred) if self.use_aci else (pred, pred)
-        self.last_prediction_ = {"base": base, "pred": pred, "raw": raw, "gamma": gamma, "lower": lower, "upper": upper}
+        raw_interval = self.aci_.interval(pred) if self.use_aci else (pred, pred)
+        lower, upper, half_width = finalize_symmetric_interval(
+            pred,
+            raw_interval,
+            interval_scale=self.interval_scale,
+            minimum_width=self.minimum_width,
+        )
+        self.last_prediction_ = {"base": base, "pred": pred, "raw": raw, "gamma": gamma, "lower": lower, "upper": upper, "half_width": half_width}
         return pd.DataFrame(
             {
                 "step": [1],
@@ -313,13 +358,13 @@ class S3FastSketchForecaster:
                 "residual_raw": [raw],
                 "residual_corrected": [corrected],
                 "gamma": [gamma],
-                "q_width": [upper - pred],
+                "half_width": [half_width],
             },
             index=base_forecast.index,
         )
 
-    def update(self, observation: float):
-        if self.last_prediction_ is not None:
+    def update(self, observation: float, *, is_observed: bool = True):
+        if is_observed and self.last_prediction_ is not None:
             self.aci_.update(
                 float(observation),
                 float(self.last_prediction_["pred"]),
@@ -335,22 +380,14 @@ class S3FastSketchForecaster:
         self,
         steps: int | None = None,
         recursive: bool = True,
-        interval_scale: float = 1.0,
-        interval_power: float = 0.0,
-        min_width: float = 0.0,
     ) -> pd.DataFrame:
-        del recursive, interval_power
+        del recursive
         steps = int(steps or self.horizon)
         rows = []
         for _ in range(steps):
-            row = self.predict_one().copy()
-            center = row["pred"].to_numpy()
-            half = np.maximum((row["upper"].to_numpy() - center) * float(interval_scale), float(min_width))
-            row["lower"] = center - half
-            row["upper"] = center + half
-            row["q_width"] = half
+            row = self.predict_one()
             rows.append(row)
-            self.update(float(row["pred"].iloc[0]))
+            self.update(float(row["pred"].iloc[0]), is_observed=False)
         return pd.concat(rows)
 
     def feature_importance(self) -> pd.DataFrame:

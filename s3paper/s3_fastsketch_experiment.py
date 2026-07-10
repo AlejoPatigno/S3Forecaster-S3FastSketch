@@ -11,6 +11,7 @@ from .metrics import evaluate_forecast, seasonal_naive_scale
 from .priors import MANDATORY_PRIOR_NAMES, split_model_prior_params, suggest_prior_params
 from .rolling_protocol import evaluate_rolling_model
 from .s3_fastsketch import S3FastSketchForecaster
+from .temporal_cv import make_expanding_window_folds, aggregate_scores
 from .utils import count_trainable_parameters, ensure_series
 
 
@@ -34,13 +35,6 @@ POINT_KEYS = {
 }
 
 
-def _holdout(series: Any, val_size: int):
-    y = ensure_series(series)
-    if len(y) <= val_size + 15:
-        val_size = max(3, len(y) // 4)
-    return y.iloc[:-val_size], y.iloc[-val_size:]
-
-
 def _tuple_choice(value: str) -> tuple[int, ...]:
     if isinstance(value, tuple):
         return value
@@ -60,6 +54,7 @@ def evaluate_fastsketch_on_holdout(
     val_subset: Any,
     params: dict,
     *,
+    seasonal_period: int = 12,
     eps: float = 1e-5,
     return_objects: bool = False,
 ):
@@ -68,27 +63,69 @@ def evaluate_fastsketch_on_holdout(
     params = _normalize_point_params(params)
     model = S3FastSketchForecaster(
         horizon=1,
-        seasonal_period=12,
+        seasonal_period=seasonal_period,
         aci_target=0.10,
         aci_step_size=0.05,
         min_train_samples=6,
         min_calib_samples=2,
         **params,
     )
-    result = evaluate_rolling_model(model, train, validation)
-    if not result["model"].fitted:
-        raise RuntimeError(result["model"].fit_report_)
+    result = evaluate_rolling_model(model, train, validation, seasonal_period=seasonal_period)
+    if not getattr(result["model"], "fitted", True) or not result["model"].fitted:
+        raise RuntimeError(getattr(result["model"], "fit_report_", "model_not_fitted"))
     forecast = result["forecast"]
-    metrics = evaluate_forecast(validation, forecast["pred"], eps=eps)
+    metrics = evaluate_forecast(
+        validation, 
+        forecast["pred"], 
+        y_train=train,
+        seasonal_period=seasonal_period,
+        eps=eps
+    )
     if return_objects:
         return metrics["mape"], forecast, model
     return metrics["mape"]
 
 
+def suggest_fastsketch_point_params(
+    trial,
+    *,
+    train_length: int,
+    seasonal_period: int,
+    prior_names=None,
+) -> dict:
+    params = {
+        "ar_lags": trial.suggest_int("ar_lags", 1, 6),
+        "ema_spans": trial.suggest_categorical(
+            "ema_spans",
+            ["2,4", "2,4,8", "3,6", "3,6,12", "2,3,5,8"],
+        ),
+        "conv_scales": trial.suggest_categorical(
+            "conv_scales",
+            ["2,3", "2,3,4", "3,6", "3,6,12", "2,4,8"],
+        ),
+        "use_calendar": trial.suggest_categorical("use_calendar", [False, True]),
+        "ridge_alpha": trial.suggest_float("ridge_alpha", 1e-3, 100.0, log=True),
+        "shrinkage_max": trial.suggest_float("shrinkage_max", 0.25, 3.0),
+        "calibration_split_ratio": trial.suggest_float("calibration_split_ratio", 0.55, 0.80),
+    }
+    params.update(
+        suggest_prior_params(
+            trial,
+            train_length=train_length,
+            seasonal_period=seasonal_period,
+            prior_names=prior_names or MANDATORY_PRIOR_NAMES,
+        )
+    )
+    return params
+
+
 def optimize_fastsketch_point(
     train_series: Any,
     *,
-    val_size: int = 12,
+    seasonal_period: int = 12,
+    n_folds: int = 3,
+    validation_size: int = 6,
+    val_size: int | None = None,
     n_trials: int = 100,
     seed: int = 42,
     prior_names: tuple[str, ...] | list[str] | None = None,
@@ -97,56 +134,55 @@ def optimize_fastsketch_point(
 ):
     import optuna
 
-    train, validation = _holdout(train_series, val_size)
+    if val_size is not None:
+        validation_size = int(val_size)
+    full = ensure_series(train_series)
+    folds = make_expanding_window_folds(
+        full,
+        n_folds=n_folds,
+        validation_size=validation_size,
+    )
+    minimum_fold_train_length = len(folds[0][0])
 
     def objective(trial: optuna.Trial) -> float:
-        params = {
-            "ar_lags": trial.suggest_int("ar_lags", 1, 6),
-            "ema_spans": _tuple_choice(
-                trial.suggest_categorical(
-                    "ema_spans",
-                    ["2,4", "2,4,8", "3,6", "3,6,12", "2,3,5,8"],
-                )
-            ),
-            "conv_scales": _tuple_choice(
-                trial.suggest_categorical(
-                    "conv_scales",
-                    ["2,3", "2,3,4", "3,6", "3,6,12", "2,4,8"],
-                )
-            ),
-            "use_calendar": trial.suggest_categorical("use_calendar", [False, True]),
-            "ridge_alpha": trial.suggest_float("ridge_alpha", 1e-3, 100.0, log=True),
-            "shrinkage_max": trial.suggest_float("shrinkage_max", 0.25, 3.0),
-            "calibration_split_ratio": trial.suggest_float("calibration_split_ratio", 0.55, 0.80),
-        }
-        params.update(
-            suggest_prior_params(
-                trial,
-                train_length=len(train),
-                seasonal_period=12,
-                prior_names=prior_names or MANDATORY_PRIOR_NAMES,
-            )
+        params = suggest_fastsketch_point_params(
+            trial,
+            train_length=minimum_fold_train_length,
+            seasonal_period=seasonal_period,
+            prior_names=prior_names,
         )
         try:
             model_params, prior_name, prior_params = split_model_prior_params(params)
             trial.set_user_attr("prior_name", prior_name)
             trial.set_user_attr("prior_params", prior_params)
-            if objective_metric == "paper_point":
-                _, forecast, _model = evaluate_fastsketch_on_holdout(
-                    train,
-                    validation,
-                    model_params,
-                    return_objects=True,
-                )
-                metrics = evaluate_forecast(
-                    validation,
-                    forecast["pred"],
-                    y_train=train,
-                )
-                score = metrics["mase"] + smape_weight * metrics["smape_percent"] / 100.0
-            else:
-                score = evaluate_fastsketch_on_holdout(train, validation, model_params)
-            return float(score) if np.isfinite(score) else float("inf")
+            
+            scores = []
+            for fold_train, fold_val in folds:
+                if objective_metric == "paper_point":
+                    _, forecast, _model = evaluate_fastsketch_on_holdout(
+                        fold_train,
+                        fold_val,
+                        model_params,
+                        seasonal_period=seasonal_period,
+                        return_objects=True,
+                    )
+                    metrics = evaluate_forecast(
+                        fold_val,
+                        forecast["pred"],
+                        y_train=fold_train,
+                        seasonal_period=seasonal_period,
+                    )
+                    score = metrics["mase"] + smape_weight * metrics["smape_percent"] / 100.0
+                else:
+                    score = evaluate_fastsketch_on_holdout(
+                        fold_train, 
+                        fold_val, 
+                        model_params,
+                        seasonal_period=seasonal_period,
+                    )
+                scores.append(score)
+            final_score = float(np.median(scores))
+            return final_score if np.isfinite(final_score) else float("inf")
         except Exception as exc:
             trial.set_user_attr("error", str(exc))
             return float("inf")
@@ -162,19 +198,25 @@ def optimize_fastsketch_uq(
     train_series: Any,
     point_params: dict,
     *,
-    val_size: int = 12,
+    seasonal_period: int = 12,
+    n_folds: int = 3,
+    validation_size: int = 6,
     n_trials: int = 100,
     target_coverage: float = 0.90,
-    seasonal_period: int = 12,
     penalty_strength: float = 100.0,
     seed: int = 42,
     optimize_nominal_level: bool = False,
 ):
-    """Optimize UQ on a validation block; the test set is never accessed."""
+    """Optimize UQ on temporal folds."""
 
     import optuna
 
-    train, validation = _holdout(train_series, val_size)
+    full = ensure_series(train_series)
+    folds = make_expanding_window_folds(
+        full,
+        n_folds=n_folds,
+        validation_size=validation_size,
+    )
     point_params = _normalize_point_params(
         {key: value for key, value in point_params.items() if key in POINT_KEYS}
     )
@@ -188,52 +230,51 @@ def optimize_fastsketch_uq(
             else fixed_alpha
         )
         aci_step_size = trial.suggest_float("aci_step_size", 0.005, 0.20, log=True)
-        interval_scale = trial.suggest_float("interval_scale", 0.75, 8.0, log=True)
-        interval_power = 0.0
-        min_width_factor = trial.suggest_float("min_width_factor", 0.0, 1.50)
+        interval_scale = trial.suggest_float("interval_scale", 0.5, 8.0, log=True)
+        min_width_factor = trial.suggest_float("min_width_factor", 0.0, 2.0)
 
         try:
-            model = S3FastSketchForecaster(
-                horizon=1,
-                seasonal_period=seasonal_period,
-                aci_target=aci_target,
-                aci_step_size=aci_step_size,
-                min_train_samples=6,
-                min_calib_samples=2,
-                **point_params,
-            )
             trial.set_user_attr("requested_nominal_coverage", target_coverage)
             trial.set_user_attr("effective_target_coverage", 1.0 - aci_target)
-            minimum_width = min_width_factor * seasonal_naive_scale(
-                train, seasonal_period=seasonal_period
-            )
-            result = evaluate_rolling_model(
-                model,
-                train,
-                validation,
-                alpha=1.0 - target_coverage,
-                seasonal_period=seasonal_period,
-            )
-            forecast = result["forecast"].copy()
-            center = forecast["pred"].to_numpy()
-            half_width = 0.5 * (forecast["upper"].to_numpy() - forecast["lower"].to_numpy())
-            half_width = np.maximum(interval_scale * half_width, minimum_width)
-            forecast["lower"] = center - half_width
-            forecast["upper"] = center + half_width
-            metrics = evaluate_forecast(
-                validation,
-                forecast["pred"],
-                y_train=train,
-                lower=forecast["lower"],
-                upper=forecast["upper"],
-                alpha=1.0 - target_coverage,
-                seasonal_period=seasonal_period,
-            )
-            penalty = penalty_strength * max(0.0, target_coverage - metrics["ecp"]) ** 2
-            trial.set_user_attr("interval_power", interval_power)
-            for key in ("ecp", "msis", "mean_width", "mape"):
-                trial.set_user_attr(key, metrics[key])
-            return float(metrics["msis"] + penalty)
+            
+            scores = []
+            for fold_train, fold_val in folds:
+                minimum_width = min_width_factor * seasonal_naive_scale(
+                    fold_train, seasonal_period=seasonal_period
+                )
+                model = S3FastSketchForecaster(
+                    horizon=1,
+                    seasonal_period=seasonal_period,
+                    aci_target=aci_target,
+                    aci_step_size=aci_step_size,
+                    interval_scale=interval_scale,
+                    minimum_width=minimum_width,
+                    min_train_samples=6,
+                    min_calib_samples=2,
+                    **point_params,
+                )
+                result = evaluate_rolling_model(
+                    model,
+                    fold_train,
+                    fold_val,
+                    alpha=1.0 - target_coverage,
+                    seasonal_period=seasonal_period,
+                )
+                forecast = result["forecast"]
+                metrics = evaluate_forecast(
+                    fold_val,
+                    forecast["pred"],
+                    y_train=fold_train,
+                    lower=forecast["lower"],
+                    upper=forecast["upper"],
+                    alpha=1.0 - target_coverage,
+                    seasonal_period=seasonal_period,
+                )
+                penalty = penalty_strength * max(0.0, target_coverage - metrics["ecp"]) ** 2
+                scores.append(metrics["msis"] + penalty)
+            
+            final_score = float(np.median(scores))
+            return final_score if np.isfinite(final_score) else float("inf")
         except Exception as exc:
             trial.set_user_attr("error", str(exc))
             return float("inf")
@@ -262,17 +303,22 @@ def evaluate_fastsketch(
     point_params, _, _ = split_model_prior_params(point_params)
     uq = dict(uq_params or {})
 
+    aci_target = float(uq.get("aci_target", alpha)) if bool(uq.get("optimize_nominal_level", False)) else float(alpha)
+    minimum_width = float(uq.get("min_width_factor", 0.0)) * seasonal_naive_scale(
+        train, seasonal_period=seasonal_period
+    )
+    interval_scale = float(uq.get("interval_scale", 1.0))
+
     model = S3FastSketchForecaster(
         horizon=1,
         seasonal_period=seasonal_period,
-        aci_target=float(uq.get("aci_target", alpha)) if bool(uq.get("optimize_nominal_level", False)) else float(alpha),
+        aci_target=aci_target,
         aci_step_size=float(uq.get("aci_step_size", 0.05)),
+        interval_scale=interval_scale,
+        minimum_width=minimum_width,
         min_train_samples=6,
         min_calib_samples=2,
         **point_params,
-    )
-    minimum_width = float(uq.get("min_width_factor", 0.0)) * seasonal_naive_scale(
-        train, seasonal_period=seasonal_period
     )
 
     start = time.perf_counter()
@@ -284,11 +330,6 @@ def evaluate_fastsketch(
         alpha=alpha,
     )
     forecast = result["forecast"].copy()
-    center = forecast["pred"].to_numpy()
-    half_width = 0.5 * (forecast["upper"].to_numpy() - forecast["lower"].to_numpy())
-    half_width = np.maximum(float(uq.get("interval_scale", 1.0)) * half_width, minimum_width)
-    forecast["lower"] = center - half_width
-    forecast["upper"] = center + half_width
     elapsed = time.perf_counter() - start
 
     metrics = evaluate_forecast(
@@ -309,18 +350,27 @@ def run_fastsketch_experiment(
     train_series: Any,
     test_series: Any,
     *,
+    seasonal_period: int = 12,
+    n_folds: int = 3,
+    validation_size: int = 12,
     point_trials: int = 100,
     uq_trials: int = 100,
-    val_size: int = 12,
     seed: int = 42,
 ):
     point_study = optimize_fastsketch_point(
-        train_series, val_size=val_size, n_trials=point_trials, seed=seed
+        train_series, 
+        seasonal_period=seasonal_period,
+        n_folds=n_folds,
+        validation_size=validation_size,
+        n_trials=point_trials, 
+        seed=seed
     )
     uq_study = optimize_fastsketch_uq(
         train_series,
         point_study.best_params,
-        val_size=val_size,
+        seasonal_period=seasonal_period,
+        n_folds=n_folds,
+        validation_size=validation_size,
         n_trials=uq_trials,
         seed=seed,
     )
@@ -329,6 +379,7 @@ def run_fastsketch_experiment(
         test_series,
         point_study.best_params,
         uq_params=uq_study.best_params,
+        seasonal_period=seasonal_period,
     )
     return {
         "point_study": point_study,

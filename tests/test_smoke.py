@@ -19,7 +19,7 @@ def _monthly_data():
 
 
 def test_metrics_percentage_and_fraction_are_consistent():
-    metrics = evaluate_forecast([10.0, 20.0], [9.0, 18.0])
+    metrics = evaluate_forecast([10.0, 20.0], [9.0, 18.0], y_train=[8.0, 12.0, 16.0])
     assert np.isclose(metrics["mape_percent"], 100.0 * metrics["mape"])
     assert np.isfinite(metrics["rmse"])
 
