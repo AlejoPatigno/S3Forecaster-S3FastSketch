@@ -563,82 +563,308 @@ def _load_wide_train_test(
 # Parser TSF para Tourism y CIF Monash
 # ============================================================
 
-def read_tsf(path: str | Path) -> tuple[pd.DataFrame, dict[str, Any]]:
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+import re
+
+import numpy as np
+import pandas as pd
+
+
+def _read_tsf_lines(
+    path: str | Path,
+    *,
+    encodings: tuple[str, ...] = (
+        "utf-8-sig",
+        "utf-8",
+        "cp1252",
+        "latin-1",
+    ),
+) -> tuple[list[str], str]:
+    """
+    Read a TSF file using a deterministic encoding fallback.
+
+    Returns
+    -------
+    lines:
+        Decoded text split into lines.
+
+    encoding:
+        Encoding that successfully decoded the file.
+    """
+
     path = Path(path)
+    errors: list[str] = []
+
+    for encoding in encodings:
+        try:
+            text = path.read_text(encoding=encoding)
+            return text.splitlines(), encoding
+        except UnicodeDecodeError as exc:
+            errors.append(f"{encoding}: {exc}")
+
+    raise UnicodeError(
+        f"Could not decode TSF file {path} with encodings "
+        f"{encodings}. Errors: {' | '.join(errors)}"
+    )
+
+
+def _parse_tsf_date(value: Any) -> pd.Timestamp:
+    """
+    Parse TSF date attributes.
+
+    Some Monash TSF files use values such as:
+
+        1979-01-01 00-00-00
+
+    instead of a conventional ISO time representation.
+    """
+
+    text = str(value).strip()
+
+    # Remove nonstandard zero-time suffixes.
+    text = re.sub(
+        r"\s+00[-:]00[-:]00$",
+        "",
+        text,
+    )
+
+    parsed = pd.to_datetime(text, errors="coerce")
+
+    if pd.notna(parsed):
+        return pd.Timestamp(parsed)
+
+    match = re.match(
+        r"^\s*(\d{4})-(\d{1,2})-(\d{1,2})",
+        text,
+    )
+
+    if match is None:
+        raise ValueError(
+            f"Could not parse TSF date attribute: {value!r}"
+        )
+
+    year, month, day = map(int, match.groups())
+
+    return pd.Timestamp(
+        year=year,
+        month=month,
+        day=day,
+    )
+
+
+def read_tsf(
+    path: str | Path,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """
+    Parse a Monash-style TSF file.
+
+    This function is compatible with `_bundle_from_tsf()` because it returns
+    a DataFrame containing a `series_value` column.
+
+    Parameters
+    ----------
+    path:
+        Path to the TSF file.
+
+    Returns
+    -------
+    frame:
+        DataFrame with TSF attributes and one NumPy array per row in
+        `series_value`.
+
+    metadata:
+        Global TSF metadata, including the detected encoding.
+    """
+
+    path = Path(path)
+
+    if not path.exists():
+        raise FileNotFoundError(path)
+
+    lines, used_encoding = _read_tsf_lines(path)
+
+    metadata: dict[str, Any] = {
+        "relation": None,
+        "frequency": None,
+        "horizon": None,
+        "missing": None,
+        "equallength": None,
+        "attributes": [],
+        "encoding": used_encoding,
+        "source_file": str(path),
+    }
 
     attributes: list[tuple[str, str]] = []
     rows: list[dict[str, Any]] = []
-    metadata: dict[str, Any] = {}
     in_data = False
 
-    with path.open("r", encoding="utf-8-sig") as file:
-        for raw_line in file:
-            line = raw_line.strip()
+    for line_number, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
 
-            if not line or line.startswith("#"):
-                continue
+        if not line or line.startswith("#"):
+            continue
 
-            lower = line.lower()
+        lower = line.lower()
 
-            if lower.startswith("@attribute"):
+        if not in_data:
+            if lower.startswith("@relation"):
+                parts = line.split(maxsplit=1)
+                metadata["relation"] = (
+                    parts[1].strip()
+                    if len(parts) > 1
+                    else None
+                )
+
+            elif lower.startswith("@attribute"):
                 parts = line.split(maxsplit=2)
+
                 if len(parts) != 3:
-                    raise ValueError(f"Atributo TSF inválido: {line}")
-                attributes.append((parts[1], parts[2].lower()))
-                continue
+                    raise ValueError(
+                        f"Invalid @attribute declaration at line "
+                        f"{line_number}: {line!r}"
+                    )
 
-            if lower.startswith("@frequency"):
-                metadata["frequency"] = line.split(maxsplit=1)[1]
-                continue
+                attribute_name = parts[1].strip()
+                attribute_type = parts[2].strip().lower()
 
-            if lower.startswith("@horizon"):
-                metadata["horizon"] = int(line.split(maxsplit=1)[1])
-                continue
+                attributes.append(
+                    (attribute_name, attribute_type)
+                )
+                metadata["attributes"].append(
+                    (attribute_name, attribute_type)
+                )
 
-            if lower.startswith("@missing"):
-                metadata["missing"] = line.split(maxsplit=1)[1].lower() == "true"
-                continue
+            elif lower.startswith("@frequency"):
+                parts = line.split(maxsplit=1)
+                metadata["frequency"] = (
+                    parts[1].strip().lower()
+                    if len(parts) > 1
+                    else None
+                )
 
-            if lower.startswith("@equallength"):
-                metadata["equallength"] = line.split(maxsplit=1)[1].lower() == "true"
-                continue
+            elif lower.startswith("@horizon"):
+                parts = line.split(maxsplit=1)
 
-            if lower == "@data":
+                if len(parts) > 1:
+                    metadata["horizon"] = int(
+                        float(parts[1].strip())
+                    )
+
+            elif lower.startswith("@missing"):
+                parts = line.split(maxsplit=1)
+                metadata["missing"] = (
+                    len(parts) > 1
+                    and parts[1].strip().lower() == "true"
+                )
+
+            elif lower.startswith("@equallength"):
+                parts = line.split(maxsplit=1)
+                metadata["equallength"] = (
+                    len(parts) > 1
+                    and parts[1].strip().lower() == "true"
+                )
+
+            elif lower == "@data":
                 in_data = True
-                continue
 
-            if not in_data:
-                continue
+            continue
 
-            parts = line.split(":")
+        number_of_attributes = len(attributes)
 
-            if len(parts) < len(attributes) + 1:
-                raise ValueError(f"Fila TSF inválida: {line[:120]}")
+        # The last field contains the comma-separated observations.
+        # maxsplit avoids splitting additional colon characters unnecessarily.
+        parts = line.split(":", number_of_attributes)
 
-            attribute_values = parts[: len(attributes)]
-            value_text = ":".join(parts[len(attributes):])
+        if len(parts) != number_of_attributes + 1:
+            raise ValueError(
+                f"Invalid TSF row at line {line_number}: expected "
+                f"{number_of_attributes + 1} fields, received "
+                f"{len(parts)}. Row={line[:180]!r}"
+            )
 
-            row: dict[str, Any] = {}
+        row: dict[str, Any] = {}
 
-            for (name, attribute_type), value in zip(attributes, attribute_values):
-                value = value.strip()
+        for (
+            attribute_name,
+            attribute_type,
+        ), raw_value in zip(
+            attributes,
+            parts[:number_of_attributes],
+        ):
+            value = raw_value.strip()
 
-                if attribute_type == "numeric":
-                    row[name] = float(value)
-                elif attribute_type == "date":
-                    row[name] = pd.to_datetime(value, errors="coerce")
-                else:
-                    row[name] = value
+            if value in {"", "?"}:
+                row[attribute_name] = np.nan
 
-            values = [
-                np.nan if value.strip() == "?" else float(value)
-                for value in value_text.split(",")
-            ]
-            row["series_value"] = values
-            rows.append(row)
+            elif attribute_type in {
+                "numeric",
+                "integer",
+                "int",
+                "real",
+                "float",
+                "double",
+            }:
+                row[attribute_name] = float(value)
 
-    return pd.DataFrame(rows), metadata
+            elif attribute_type in {
+                "date",
+                "datetime",
+                "timestamp",
+            }:
+                row[attribute_name] = _parse_tsf_date(value)
 
+            else:
+                row[attribute_name] = value
+
+        observations: list[float] = []
+
+        for raw_value in parts[-1].split(","):
+            value = raw_value.strip()
+
+            if value in {"", "?"}:
+                observations.append(np.nan)
+            else:
+                try:
+                    observations.append(float(value))
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Invalid numeric value at line "
+                        f"{line_number}: {value!r}"
+                    ) from exc
+
+        if not observations:
+            raise ValueError(
+                f"No observations found at TSF line {line_number}."
+            )
+
+        row["series_value"] = np.asarray(
+            observations,
+            dtype=float,
+        )
+        rows.append(row)
+
+    if not in_data:
+        raise ValueError(
+            f"The TSF file {path} does not contain an @data declaration."
+        )
+
+    if not rows:
+        raise ValueError(
+            f"No time series were parsed from {path}."
+        )
+
+    frame = pd.DataFrame(rows)
+
+    print("Selected TSF file:", path)
+    print("TSF encoding:", used_encoding)
+    print("Parsed series:", len(frame))
+    print("Global horizon:", metadata.get("horizon"))
+    print("Frequency:", metadata.get("frequency"))
+
+    return frame, metadata
 
 def _bundle_from_tsf(
     path: str | Path,
@@ -674,21 +900,50 @@ def _bundle_from_tsf(
             else f"{dataset_name}_{row_number:05d}"
         )
 
-        values = np.asarray(row["series_value"], dtype=float)
+        values = np.asarray(
+            row["series_value"],
+            dtype=float,
+        )
 
-        if np.isnan(values).any():
+        missing_count = int(
+            np.isnan(values).sum()
+        )
+
+        if missing_count > 0:
             if missing_policy == "raise":
-                raise ValueError(f"{dataset_name}/{series_id} contiene valores faltantes.")
+                raise ValueError(
+                    f"{dataset_name}/{series_id} contains "
+                    f"{missing_count} missing values."
+                )
+
             if missing_policy == "interpolate":
                 values = (
-                    pd.Series(values)
-                    .interpolate(limit_direction="both")
+                    pd.Series(values, dtype=float)
+                    .interpolate(
+                        method="linear",
+                        limit_direction="both",
+                    )
+                    .ffill()
+                    .bfill()
                     .to_numpy(dtype=float)
                 )
+
             elif missing_policy == "drop":
-                values = values[np.isfinite(values)]
+                values = values[
+                    np.isfinite(values)
+                ]
+
             else:
-                raise ValueError(f"missing_policy inválido: {missing_policy}")
+                raise ValueError(
+                    f"Invalid missing_policy={missing_policy!r}. "
+                    "Expected 'raise', 'interpolate', or 'drop'."
+                )
+
+        if not np.isfinite(values).all():
+            raise ValueError(
+                f"{dataset_name}/{series_id} still contains "
+                "non-finite values after preprocessing."
+            )
 
         horizon = (
             int(row[horizon_column])
@@ -720,7 +975,18 @@ def _bundle_from_tsf(
                 "series_id": series_id,
                 "forecast_horizon": horizon,
                 "start_timestamp": full_series.index[0],
-                "frequency": file_metadata.get("frequency", "monthly"),
+                "frequency": file_metadata.get(
+                    "frequency",
+                    "monthly",
+                ),
+                "missing_values_imputed": missing_count,
+                "source_file": file_metadata.get(
+                    "source_file",
+                    str(path),
+                ),
+                "source_encoding": file_metadata.get(
+                    "encoding",
+                ),
             }
         )
 
@@ -1110,10 +1376,11 @@ def load_tourism_monthly(
 
         if tsf_path is not None:
             bundle = _bundle_from_tsf(
-                tsf_path,
-                dataset_name="Tourism_Monthly",
-                default_horizon=default_horizon,
-                seasonal_period=12,
+            tsf_path,
+            dataset_name="Tourism_Monthly",
+            default_horizon=default_horizon,
+            seasonal_period=12,
+            missing_policy="interpolate",
             )
         else:
             table_path = _find_file(
