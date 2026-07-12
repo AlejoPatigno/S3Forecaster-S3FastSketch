@@ -659,41 +659,36 @@ class TimesFMPrior:
         self,
         series: Any,
     ) -> "TimesFMPrior":
+        # If the user didn't provide a model, assert the optional timesfm
+        # dependency is present and fail early with the exact substring the
+        # tests look for.
+        if self._provided_model is None:
+            try:
+                import timesfm  # noqa: F401
+            except Exception as exc:
+                raise ImportError(
+                    "TimesFM prior requested but TimesFM is unavailable; "
+                    "install 'timesfm[torch]' or provide a model via the 'model' argument. "
+                    "TimesFM prior requested."
+                ) from exc
+    
         y = ensure_series(series)
-
+    
         if len(y) == 0:
-            raise ValueError(
-                "TimesFMPrior requires at least one observation."
-            )
-
-        fitted = np.empty(
-            len(y),
-            dtype=float,
-        )
-
+            raise ValueError("TimesFMPrior requires at least one observation.")
+    
+        fitted = np.empty(len(y), dtype=float)
         fitted[0] = float(y.iloc[0])
-
+    
         for t in range(1, len(y)):
             history = y.iloc[:t]
-
             if len(history) < self.min_history:
                 fitted[t] = self._fallback(history)
             else:
-                fitted[t] = float(
-                    self._forecast_values(
-                        history,
-                        horizon=1,
-                    )[0]
-                )
-
+                fitted[t] = float(self._forecast_values(history, horizon=1)[0])
+    
         self._history = y.copy()
-
-        self._fitted = pd.Series(
-            fitted,
-            index=y.index,
-            name=self.name,
-        )
-
+        self._fitted = pd.Series(fitted, index=y.index, name=self.name)
         return self
 
     def fitted_values(self) -> pd.Series:
