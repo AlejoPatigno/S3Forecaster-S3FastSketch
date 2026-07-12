@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 
+
 @dataclass(frozen=True)
 class DatasetBundle:
     """
@@ -563,14 +564,7 @@ def _load_wide_train_test(
 # Parser TSF para Tourism y CIF Monash
 # ============================================================
 
-from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
-import re
-
-import numpy as np
-import pandas as pd
 
 
 def _read_tsf_lines(
