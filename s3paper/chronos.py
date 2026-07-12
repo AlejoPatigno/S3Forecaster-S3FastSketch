@@ -142,11 +142,20 @@ class ChronosZeroShotModel:
             return self.pipeline
 
         try:
-            from chronos import BaseChronosPipeline, Chronos2Pipeline
+            from chronos import (
+                BaseChronosPipeline,
+                Chronos2Pipeline,
+            )
+        except ModuleNotFoundError as exc:
+            raise ImportError(
+                "The chronos module was not found. Install "
+                "chronos-forecasting before using Chronos."
+            ) from exc
         except Exception as exc:
             raise ImportError(
-                "Install chronos-forecasting to use Chronos without passing a "
-                "custom model_or_factory or predict_fn."
+                "Chronos is installed, but one of its dependencies "
+                "failed during import. "
+                f"Original error: {type(exc).__name__}: {exc}"
             ) from exc
 
         kwargs = {"device_map": self.device_map}
