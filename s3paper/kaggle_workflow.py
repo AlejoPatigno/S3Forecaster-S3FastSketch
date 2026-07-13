@@ -43,6 +43,7 @@ from s3paper.result_store import (
 from s3paper.rolling_protocol import evaluate_rolling_model
 from s3paper.s3_fastsketch_experiment import evaluate_fastsketch
 from s3paper.s3_forecaster_experiment import evaluate_s3_forecaster
+from s3paper.single_series_transfer_hpo import run_single_series_hpo_transfer_experiment
 
 from s3paper.kaggle_loaders import DatasetBundle
 
@@ -336,6 +337,14 @@ def optimize_proposed_models_collection(
     development_ids: Sequence[str],
     config: NotebookRunConfig,
 ) -> dict[str, Any]:
+    import warnings
+
+    warnings.warn(
+        "optimize_proposed_models_collection is the legacy fold-based Kaggle "
+        "path. Use run_common_kaggle_transfer_pipeline for the main protocol.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     development_map = build_series_map(bundle, development_ids)
 
     common = {
@@ -844,6 +853,15 @@ def run_common_kaggle_pipeline(
     output_root: str | Path = "/kaggle/working/outputs",
     baseline_parameters: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    import warnings
+
+    warnings.warn(
+        "run_common_kaggle_pipeline uses the legacy development/evaluation "
+        "split and fold-based HPO. Use run_common_kaggle_transfer_pipeline for "
+        "the main single-development-series transfer protocol.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     set_reproducibility(config.seed)
 
     bundle = limit_series_for_mode(bundle, config)
@@ -920,4 +938,82 @@ def run_common_kaggle_pipeline(
         "proposed_store": proposed_store,
         "baseline_store": baseline_store,
         "paths": paths,
+    }
+
+
+def run_common_kaggle_transfer_pipeline(
+    bundle: DatasetBundle,
+    *,
+    config: NotebookRunConfig,
+    git_commit: str,
+    output_root: str | Path = "/kaggle/working/outputs",
+) -> dict[str, Any]:
+    """Run the protocol-compliant proposed-model Kaggle workflow.
+
+    This path selects one development series per dataset/model, runs point and
+    UQ HPO once on that series, freezes the resulting hyperparameters, and
+    evaluates every other series with no per-series Optuna calls.
+    """
+
+    set_reproducibility(config.seed)
+    bundle = limit_series_for_mode(bundle, config)
+    output_directory, run_id = create_run_directory(
+        bundle.name,
+        root=output_root,
+    )
+    series_map = build_series_map(bundle, bundle.series_ids)
+
+    s3_result = run_single_series_hpo_transfer_experiment(
+        series_map=series_map,
+        model_name="S3Forecaster",
+        dataset_name=bundle.name,
+        seasonal_period=bundle.seasonal_period,
+        seed=config.seed,
+        n_point_trials=config.point_trials,
+        n_uq_trials=config.uq_trials,
+        target_coverage=config.target_coverage,
+        git_commit=git_commit,
+        output_dir=output_directory / "s3_forecaster",
+    )
+    fast_result = run_single_series_hpo_transfer_experiment(
+        series_map=series_map,
+        model_name="S3FastSketchForecaster",
+        dataset_name=bundle.name,
+        seasonal_period=bundle.seasonal_period,
+        seed=config.seed,
+        n_point_trials=config.point_trials,
+        n_uq_trials=config.uq_trials,
+        target_coverage=config.target_coverage,
+        git_commit=git_commit,
+        output_dir=output_directory / "s3_fastsketch",
+    )
+
+    save_json(
+        {
+            **asdict(config),
+            "dataset": bundle.name,
+            "run_id": run_id,
+            "git_commit": git_commit,
+            "cross_validation": False,
+            "one_hpo_series_per_dataset": True,
+            "hpo_repeated_per_series": False,
+        },
+        output_directory / "config.json",
+    )
+
+    return {
+        "bundle": bundle,
+        "config": config,
+        "run_id": run_id,
+        "output_directory": output_directory,
+        "s3_result": s3_result,
+        "fastsketch_result": fast_result,
+        "development_ids": [
+            s3_result["development_series_id"],
+            fast_result["development_series_id"],
+        ],
+        "evaluation_ids": sorted(
+            set(s3_result["evaluation_results"]["aggregate_series_ids"])
+            | set(fast_result["evaluation_results"]["aggregate_series_ids"])
+        ),
     }

@@ -57,6 +57,7 @@ The reported parameter count includes fitted readout coefficients and intercepts
 | S3 Optuna and test cells | `s3paper/s3_forecaster_experiment.py` |
 | FastSketch class declarations | `s3paper/s3_fastsketch.py` |
 | FastSketch Optuna and test cells | `s3paper/s3_fastsketch_experiment.py` |
+| Main interseries HPO transfer protocol | `s3paper/single_series_transfer_hpo.py` |
 | Baseline model blocks | `s3paper/baselines.py` |
 | Ablation cells | `s3paper/ablation_study.py` |
 | Shock/non-shock cells | `s3paper/shock_analysis.py` |
@@ -105,6 +106,24 @@ The replacement notebook keeps the source notebook's dataset protocol:
 The source notebook contained 48 cells and 206 inline function/class definitions. The generated replacement has 26 cells and delegates repeated logic to the `s3paper` modules listed above.
 
 Fixed parameters recovered from the source notebook are embedded in the replacement notebook for CPU-friendly reruns. The notebook also exposes `RUN_OPTUNA`; when set to `True`, it reruns training-only hyperparameter searches through the repository experiment helpers.
+
+## Current HPO protocol
+
+The current main interseries protocol is implemented in
+`s3paper/single_series_transfer_hpo.py`. For each dataset/model pair it selects
+one development series with a fixed seed, applies one chronological
+64/16/20 train/calibration/test split, runs point HPO once on train versus
+calibration, freezes those point hyperparameters, runs UQ HPO once on the same
+train/calibration split, and transfers the frozen configuration to all other
+series. The development series is reported diagnostically but excluded from the
+principal aggregate metrics.
+
+The legacy fold-based collection helpers in `s3paper/multiseries_hpo.py` and
+the older `run_common_kaggle_pipeline` path remain for backward compatibility
+and emit deprecation warnings. They are not the main experimental protocol.
+Kaggle runs that should follow the current protocol should call
+`run_common_kaggle_transfer_pipeline` or call
+`run_single_series_hpo_transfer_experiment` directly.
 
 The replacement exports the following CSV artifacts:
 

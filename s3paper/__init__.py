@@ -42,6 +42,13 @@ from .rolling_evaluation import evaluate_rolling_model, rolling_one_step_forecas
 from .selection import AdapterSelectionRule, residual_predictability_score, select_family
 from .prior_cache import PriorForecastCache
 from .temporal_cv import aggregate_scores, make_expanding_window_folds
+from .single_series_transfer_hpo import (
+    evaluate_frozen_configuration_on_collection,
+    optimize_on_development_series,
+    run_single_series_hpo_transfer_experiment,
+    select_development_series,
+    temporal_train_cal_test_split,
+)
 from .result_store import (
     REQUIRED_RESULT_COLUMNS,
     assert_unique_metric_source,
@@ -102,6 +109,11 @@ __all__ = [
     "PriorForecastCache",
     "make_expanding_window_folds",
     "aggregate_scores",
+    "temporal_train_cal_test_split",
+    "select_development_series",
+    "optimize_on_development_series",
+    "evaluate_frozen_configuration_on_collection",
+    "run_single_series_hpo_transfer_experiment",
     "evaluate_rolling_model",
     "rolling_one_step_forecast",
     "ChronosZeroShotModel",

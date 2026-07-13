@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -45,6 +46,12 @@ def optimize_collection(
     max_failure_fraction: float = 0.25,
     seed: int = 42,
 ):
+    warnings.warn(
+        "optimize_collection uses multi-series temporal folds and is legacy. "
+        "Use run_single_series_hpo_transfer_experiment for the main protocol.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     import optuna
 
     fold_map = {
@@ -106,6 +113,12 @@ def optimize_collection(
 
 
 def optimize_s3_collection(series_map: dict[str, Any], **kwargs):
+    warnings.warn(
+        "optimize_s3_collection is legacy fold-based HPO. Use "
+        "run_single_series_hpo_transfer_experiment.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     def suggest(trial, min_train, sp):
         return suggest_s3_point_params(
             trial, 
@@ -126,6 +139,12 @@ def optimize_s3_collection(series_map: dict[str, Any], **kwargs):
 
 
 def optimize_fastsketch_collection(series_map: dict[str, Any], **kwargs):
+    warnings.warn(
+        "optimize_fastsketch_collection is legacy fold-based HPO. Use "
+        "run_single_series_hpo_transfer_experiment.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     def suggest(trial, min_train, sp):
         return suggest_fastsketch_point_params(
             trial, 
@@ -160,6 +179,12 @@ def optimize_uq_collection(
     penalty_strength: float = 100.0,
     seed: int = 42,
 ):
+    warnings.warn(
+        "optimize_uq_collection uses multi-series temporal folds and is legacy. "
+        "Use run_single_series_hpo_transfer_experiment for the main protocol.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     import optuna
 
     fold_map = {
