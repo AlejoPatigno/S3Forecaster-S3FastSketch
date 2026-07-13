@@ -15,7 +15,84 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 import pandas as pd
 
+from pathlib import Path
 
+
+_CIF_KEYWORDS = ("cif-dataset", "cif_dataset", "cif")
+_SERIES_EXTENSIONS = {".tsf", ".ts"}
+
+
+def _locate_cif_series_file(
+    dataset_directory: str | Path,
+) -> Path | None:
+    """
+    Locate the CIF TSF/TS file.
+
+    First searches below dataset_directory. If that path does not exist or
+    contains no compatible file, it searches recursively below /kaggle/input.
+    """
+
+    requested_root = Path(dataset_directory).expanduser()
+
+    search_roots: list[Path] = []
+
+    if requested_root.exists():
+        search_roots.append(requested_root.resolve())
+
+    kaggle_root = Path("/kaggle/input")
+    if kaggle_root.exists():
+        kaggle_root = kaggle_root.resolve()
+
+        if kaggle_root not in search_roots:
+            search_roots.append(kaggle_root)
+
+    candidates: list[Path] = []
+
+    for root in search_roots:
+        candidates.extend(
+            path
+            for path in root.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() in _SERIES_EXTENSIONS
+        )
+
+    # Remove duplicated resolved paths.
+    candidates = list(
+        {
+            candidate.resolve(): candidate.resolve()
+            for candidate in candidates
+        }.values()
+    )
+
+    if not candidates:
+        return None
+
+    def score(path: Path) -> tuple[int, int, int, int]:
+        text = str(path).lower()
+
+        keyword_score = sum(
+            keyword in text
+            for keyword in _CIF_KEYWORDS
+        )
+
+        monthly_score = int("monthly" in text)
+
+        # Prefer TSF over TS because the CIF dataset normally uses TSF.
+        tsf_score = int(path.suffix.lower() == ".tsf")
+
+        return (
+            -keyword_score,
+            -monthly_score,
+            -tsf_score,
+            len(text),
+        )
+
+    candidates.sort(key=score)
+
+    selected = candidates[0]
+    print(f"Selected CIF dataset file: {selected}")
+
+    return selected
 
 @dataclass(frozen=True)
 class DatasetBundle:
@@ -1407,66 +1484,88 @@ def load_tourism_monthly(
 # ============================================================
 
 def load_cif_2016(
-    dataset_directory: str | Path,
-    *,
-    minimum_train_length: int = 36,
-    maximum_train_length: int | None = 199,
-    maximum_series: int | None = None,
-    selected_series: Sequence[str] | None = None,
-    default_horizon: int = 12,
-) -> DatasetBundle:
-    root = Path(dataset_directory)
+    dataset_directory,
+    minimum_train_length=36,
+    maximum_train_length=199,
+    maximum_series=None,
+    selected_series=None,
+    default_horizon=12,
+):
+    root = Path(dataset_directory).expanduser()
+
+    # ========================================================
+    # CIF is normally distributed as a TSF file
+    # ========================================================
+
+    series_path = _locate_cif_series_file(root)
+
+    if series_path is not None:
+        return _bundle_from_tsf(
+            series_path,
+            dataset_name="CIF 2016",
+            minimum_train_length=minimum_train_length,
+            maximum_train_length=maximum_train_length,
+            maximum_series=maximum_series,
+            selected_series=selected_series,
+            default_horizon=default_horizon,
+        )
+
+    # ========================================================
+    # Existing CSV/XLSX fallback
+    # ========================================================
 
     train_path = _find_file(
         root,
-        ("*cif*train*.csv", "*monthly*train*.csv"),
+        (
+            "*train*.csv",
+            "*train*.xlsx",
+            "*training*.csv",
+            "*training*.xlsx",
+        ),
         required=False,
     )
+
     test_path = _find_file(
         root,
-        ("*cif*test*.csv", "*monthly*test*.csv"),
+        (
+            "*test*.csv",
+            "*test*.xlsx",
+            "*evaluation*.csv",
+            "*evaluation*.xlsx",
+        ),
         required=False,
     )
 
     if train_path is not None and test_path is not None:
-        bundle = _load_wide_train_test(
-            train_path,
-            test_path,
-            dataset_name="CIF_2016",
-            seasonal_period=12,
-        )
-    else:
-        tsf_path = _find_file(
-            root,
-            ("*cif*.tsf", "*.tsf"),
-            required=False,
+        return _load_wide_train_test(
+            train_path=train_path,
+            test_path=test_path,
+            dataset_name="CIF 2016",
+            minimum_train_length=minimum_train_length,
+            maximum_train_length=maximum_train_length,
+            maximum_series=maximum_series,
+            selected_series=selected_series,
         )
 
-        if tsf_path is not None:
-            bundle = _bundle_from_tsf(
-                tsf_path,
-                dataset_name="CIF_2016",
-                default_horizon=default_horizon,
-                seasonal_period=12,
-            )
-        else:
-            table_path = _find_file(
-                root,
-                ("*cif*.csv", "*.xlsx", "*.csv"),
-            )
-            bundle = _bundle_from_generic_table(
-                _read_table(table_path),
-                dataset_name="CIF_2016",
-                default_horizon=default_horizon,
-                seasonal_period=12,
-            )
+    table_path = _find_file(
+        root,
+        (
+            "*cif*.xlsx",
+            "*cif*.csv",
+            "*.xlsx",
+            "*.csv",
+        ),
+        required=True,
+    )
 
-    return _validate_bundle(
-        bundle,
+    return _bundle_from_generic_table(
+        table_path,
+        dataset_name="CIF 2016",
         minimum_train_length=minimum_train_length,
         maximum_train_length=maximum_train_length,
         maximum_series=maximum_series,
         selected_series=selected_series,
+        default_horizon=default_horizon,
     )
 
 
