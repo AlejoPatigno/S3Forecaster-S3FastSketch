@@ -78,7 +78,7 @@ def _locate_cif_series_file(
         monthly_score = int("monthly" in text)
 
         # Prefer TSF over TS because the CIF dataset normally uses TSF.
-        tsf_score = int(path.suffix.lower() == ".tsf")
+        tsf_score = int(path.suffix.lower() == ".ts")
 
         return (
             -keyword_score,
