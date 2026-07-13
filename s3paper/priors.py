@@ -451,11 +451,11 @@ class ChronosPrior:
 
 class TimesFMPrior:
     """
-    Causal TimesFM 2.5 prior compatible with the S3 prior interface.
+    TimesFM foundation prior compatible with the S3 prior interface.
 
-    The pretrained model is loaded lazily and shared between instances.
-    Historical fitted values are generated causally: the fitted value at
-    timestamp t only uses observations strictly before t.
+    This mirrors ChronosPrior: pass ``predict_fn`` or ``model_or_factory`` for
+    notebook/mock runs. If both are omitted, the prior lazily loads TimesFM and
+    wraps it through the common fit_predict adapter.
     """
 
     name = "timesfm"
@@ -466,6 +466,8 @@ class TimesFMPrior:
         self,
         model_id: str = "google/timesfm-2.5-200m-pytorch",
         *,
+        model_or_factory: Any = None,
+        predict_fn: Any = None,
         min_history: int = 24,
         max_context: int = 1024,
         max_horizon: int = 256,
@@ -473,15 +475,14 @@ class TimesFMPrior:
         model: Any = None,
     ):
         self.model_id = str(model_id)
+        if model_or_factory is None and model is not None:
+            model_or_factory = model
+        self.model_or_factory = model_or_factory
+        self.predict_fn = predict_fn
         self.min_history = int(min_history)
         self.max_context = int(max_context)
         self.max_horizon = int(max_horizon)
         self.normalize_inputs = bool(normalize_inputs)
-
-        self._provided_model = model
-        self._history: pd.Series | None = None
-        self._fitted: pd.Series | None = None
-        self._warnings: list[str] = []
 
         if self.min_history < 2:
             raise ValueError("min_history must be at least 2.")
@@ -498,8 +499,10 @@ class TimesFMPrior:
             )
 
     def _load_model(self):
-        if self._provided_model is not None:
-            return self._provided_model
+        if self.model_or_factory is not None:
+            if callable(self.model_or_factory):
+                return self.model_or_factory()
+            return self.model_or_factory
 
         cache_key = (
             self.model_id,
@@ -586,19 +589,6 @@ class TimesFMPrior:
 
         return array
 
-    @staticmethod
-    def _fallback(
-        history: pd.Series,
-    ) -> float:
-        if len(history) == 0:
-            return 0.0
-
-        # Monthly seasonal-naive fallback.
-        if len(history) >= 12:
-            return float(history.iloc[-12])
-
-        return float(history.iloc[-1])
-
     def _forecast_values(
         self,
         history: pd.Series,
@@ -625,10 +615,14 @@ class TimesFMPrior:
 
         model = self._load_model()
 
-        point_forecast, _ = model.forecast(
-            horizon=horizon,
-            inputs=[values],
-        )
+        if callable(model) and not hasattr(model, "forecast"):
+            point_forecast = model(history, horizon)
+        else:
+            output = model.forecast(
+                horizon=horizon,
+                inputs=[values],
+            )
+            point_forecast = output[0] if isinstance(output, tuple) else output
 
         forecast = np.asarray(
             point_forecast,
@@ -655,120 +649,50 @@ class TimesFMPrior:
 
         return forecast
 
-    def fit(
-        self,
-        series: Any,
-    ) -> "TimesFMPrior":
-        # If the user didn't provide a model, assert the optional timesfm
-        # dependency is present and fail early with the exact substring the
-        # tests look for.
-        if self._provided_model is None:
+    def _make_legacy(self):
+        from .multi_prior_robustness import CallableAutoregressivePrior
+
+        predict_fn = self.predict_fn
+        if predict_fn is None:
+            predict_fn = self._forecast_values
+
+        return CallableAutoregressivePrior(
+            predict_fn,
+            min_history=self.min_history,
+            fallback="last",
+            name=self.name,
+        )
+
+    def _adapter(self) -> "FitPredictPriorAdapter":
+        if self.model_or_factory is None and self.predict_fn is None:
             try:
                 import timesfm  # noqa: F401
             except Exception as exc:
                 raise ImportError(
                     "TimesFM prior requested but TimesFM is unavailable; "
-                    "install 'timesfm[torch]' or provide a model via the 'model' argument. "
-                    "TimesFM prior requested."
+                    "install 'timesfm[torch]' or provide a custom predictor."
                 ) from exc
-    
-        y = ensure_series(series)
-    
-        if len(y) == 0:
-            raise ValueError("TimesFMPrior requires at least one observation.")
-    
-        fitted = np.empty(len(y), dtype=float)
-        fitted[0] = float(y.iloc[0])
-    
-        for t in range(1, len(y)):
-            history = y.iloc[:t]
-            if len(history) < self.min_history:
-                fitted[t] = self._fallback(history)
-            else:
-                fitted[t] = float(self._forecast_values(history, horizon=1)[0])
-    
-        self._history = y.copy()
-        self._fitted = pd.Series(fitted, index=y.index, name=self.name)
+        return FitPredictPriorAdapter(self._make_legacy())
+
+    def fit(self, series: Any) -> CausalPrior:
+        self._inner = self._adapter().fit(series)
         return self
 
     def fitted_values(self) -> pd.Series:
-        if self._fitted is None:
-            raise RuntimeError(
-                "TimesFMPrior must be fitted before "
-                "fitted_values()."
-            )
+        return self._inner.fitted_values()
 
-        return self._fitted.copy()
-
-    def predict(
-        self,
-        horizon: int,
-    ) -> pd.Series:
-        if self._history is None:
-            raise RuntimeError(
-                "TimesFMPrior must be fitted before predict()."
-            )
-
-        forecast = self._forecast_values(
-            self._history,
-            int(horizon),
-        )
-
-        return pd.Series(
-            forecast,
-            index=make_future_index(
-                self._history,
-                int(horizon),
-            ),
-            name=self.name,
-        )
+    def predict(self, horizon: int) -> pd.Series:
+        return self._inner.predict(horizon)
 
     def predict_one(self) -> float:
-        return float(
-            self.predict(1).iloc[0]
-        )
+        return float(self.predict(1).iloc[0])
 
     def update(
         self,
         timestamp_or_observation: Any,
         observed_value: float | None = None,
     ) -> "TimesFMPrior":
-        if self._history is None:
-            raise RuntimeError(
-                "TimesFMPrior must be fitted before update()."
-            )
-
-        # The causal fitted value for the new observation must
-        # be calculated before adding the observation.
-        fitted_value = self.predict_one()
-
-        if observed_value is None:
-            timestamp = make_future_index(
-                self._history,
-                1,
-            )[0]
-            observation = float(
-                timestamp_or_observation
-            )
-        else:
-            timestamp = timestamp_or_observation
-            observation = float(observed_value)
-
-        self._history.loc[timestamp] = observation
-
-        new_fitted = pd.Series(
-            [fitted_value],
-            index=[timestamp],
-            name=self.name,
-        )
-
-        self._fitted = pd.concat(
-            [
-                self.fitted_values(),
-                new_fitted,
-            ]
-        )
-
+        self._inner.update(timestamp_or_observation, observed_value)
         return self
 
     def get_params(self) -> dict[str, Any]:
@@ -781,27 +705,14 @@ class TimesFMPrior:
         }
 
     def clone(self) -> "TimesFMPrior":
-        # Do not deepcopy the pretrained PyTorch model.
-        return TimesFMPrior(
-            model_id=self.model_id,
-            min_history=self.min_history,
-            max_context=self.max_context,
-            max_horizon=self.max_horizon,
-            normalize_inputs=self.normalize_inputs,
-            model=self._provided_model,
-        )
+        return copy.deepcopy(self)
 
     def status(self) -> dict[str, Any]:
         return {
             "prior_name": self.name,
             "model_id": self.model_id,
-            "fitted": self._history is not None,
-            "n_observations": (
-                0
-                if self._history is None
-                else int(len(self._history))
-            ),
-            "warnings": list(self._warnings),
+            "fitted": hasattr(self, "_inner"),
+            "warnings": [],
         }
 
 PRIOR_REGISTRY = {
