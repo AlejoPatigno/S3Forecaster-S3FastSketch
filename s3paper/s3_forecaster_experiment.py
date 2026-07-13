@@ -116,6 +116,57 @@ def optimize_s3_forecaster(
     return study
 
 
+def optimize_s3_forecaster_holdout(
+    train_series: Any,
+    calibration_series: Any,
+    *,
+    seasonal_period: int = 12,
+    n_trials: int = 100,
+    seed: int = 42,
+    objective_metric: str = "mape",
+    prior_names: tuple[str, ...] | list[str] | None = None,
+):
+    """Optimize point-forecast hyperparameters on one train/calibration split."""
+
+    import optuna
+
+    train = ensure_series(train_series, name="train")
+    calibration = ensure_series(calibration_series, name="calibration")
+
+    def objective(trial: optuna.Trial) -> float:
+        params = suggest_s3_point_params(
+            trial,
+            train_length=len(train),
+            seasonal_period=seasonal_period,
+            prior_names=prior_names,
+        )
+        try:
+            model_params, prior_name, prior_params = split_model_prior_params(params)
+            trial.set_user_attr("prior_name", prior_name)
+            trial.set_user_attr("prior_params", prior_params)
+            model = S3Forecaster(horizon=1, **model_params)
+            result = evaluate_rolling_model(
+                model,
+                train,
+                calibration,
+                seasonal_period=seasonal_period,
+            )
+            metrics = result["metrics"]
+            score = float(metrics[objective_metric])
+            return score if np.isfinite(score) else float("inf")
+        except Exception as exc:
+            trial.set_user_attr("error", str(exc))
+            return float("inf")
+
+    study = optuna.create_study(
+        direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed)
+    )
+    study.optimize(objective, n_trials=int(n_trials), show_progress_bar=False)
+    study.set_user_attr("cross_validation", False)
+    study.set_user_attr("holdout_protocol", "train_calibration")
+    return study
+
+
 def optimize_s3_uq(
     train_series: Any,
     point_params: dict,
@@ -193,6 +244,72 @@ def optimize_s3_uq(
         direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed)
     )
     study.optimize(objective, n_trials=int(n_trials), show_progress_bar=False)
+    return study
+
+
+def optimize_s3_uq_holdout(
+    train_series: Any,
+    calibration_series: Any,
+    point_params: dict,
+    *,
+    seasonal_period: int = 12,
+    n_trials: int = 100,
+    target_coverage: float = 0.90,
+    penalty_strength: float = 100.0,
+    seed: int = 42,
+):
+    """Optimize uncertainty parameters with point parameters frozen."""
+
+    import optuna
+
+    train = ensure_series(train_series, name="train")
+    calibration = ensure_series(calibration_series, name="calibration")
+    fixed_alpha = 1.0 - float(target_coverage)
+    frozen_point_params = dict(point_params)
+
+    def objective(trial: optuna.Trial) -> float:
+        aci_step_size = trial.suggest_float("aci_step_size", 0.005, 0.20, log=True)
+        interval_scale = trial.suggest_float("interval_scale", 0.5, 8.0, log=True)
+        min_width_factor = trial.suggest_float("min_width_factor", 0.0, 2.0)
+        try:
+            params, prior_name, prior_params = split_model_prior_params(frozen_point_params)
+            params["aci_step_size"] = aci_step_size
+            minimum_width = min_width_factor * seasonal_naive_scale(
+                train,
+                seasonal_period=seasonal_period,
+            )
+            trial.set_user_attr("prior_name", prior_name)
+            trial.set_user_attr("prior_params", prior_params)
+            trial.set_user_attr("requested_nominal_coverage", target_coverage)
+            trial.set_user_attr("effective_target_coverage", target_coverage)
+            model = S3Forecaster(
+                horizon=1,
+                target_miscoverage=fixed_alpha,
+                interval_scale=interval_scale,
+                minimum_width=minimum_width,
+                **params,
+            )
+            result = evaluate_rolling_model(
+                model,
+                train,
+                calibration,
+                alpha=fixed_alpha,
+                seasonal_period=seasonal_period,
+            )
+            metrics = result["metrics"]
+            penalty = penalty_strength * max(0.0, target_coverage - metrics["ecp"]) ** 2
+            score = float(metrics["msis"] + penalty)
+            return score if np.isfinite(score) else float("inf")
+        except Exception as exc:
+            trial.set_user_attr("error", str(exc))
+            return float("inf")
+
+    study = optuna.create_study(
+        direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed)
+    )
+    study.optimize(objective, n_trials=int(n_trials), show_progress_bar=False)
+    study.set_user_attr("cross_validation", False)
+    study.set_user_attr("point_params_frozen", True)
     return study
 
 

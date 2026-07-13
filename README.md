@@ -18,7 +18,8 @@ This package consolidates the repeated experimental code from the CIF, M3, M4, T
 | Canonical result store | `s3paper/result_store.py` |
 | Temporal CV folds | `s3paper/temporal_cv.py` |
 | Prior forecast cache | `s3paper/prior_cache.py` |
-| Multi-series HPO helpers | `s3paper/multiseries_hpo.py` |
+| Single-series HPO transfer protocol | `s3paper/single_series_transfer_hpo.py` |
+| Legacy multi-series/fold HPO helpers | `s3paper/multiseries_hpo.py` |
 | Residual diagnostics | `s3paper/residual_analysis.py` |
 | S3-Forecaster class | `s3paper/s3_forecaster.py` |
 | S3-Forecaster HPO and final test | `s3paper/s3_forecaster_experiment.py` |
@@ -124,7 +125,38 @@ results = evaluate_proposed_models(
 print(results["table"])
 ```
 
-## Hyperparameter optimization
+## Main hyperparameter optimization protocol
+
+The main interseries experiment optimizes once per model and dataset. A single
+development series is selected reproducibly with a seed, split chronologically
+into 64% train, 16% calibration, and 20% test, and used for both point HPO and
+UQ HPO. No temporal cross-validation is used in this main protocol, and Optuna
+is not run per evaluation series or over all series at once. The frozen point
+and UQ hyperparameters are transferred to the remaining series; each remaining
+series fits its own trainable parameters and scale-dependent calibration from
+its own train/calibration blocks. The development series is excluded from the
+principal aggregate metrics.
+
+```python
+from s3paper.single_series_transfer_hpo import run_single_series_hpo_transfer_experiment
+
+result = run_single_series_hpo_transfer_experiment(
+    series_map=series_map,
+    model_name="S3Forecaster",
+    dataset_name="M4-Monthly",
+    seasonal_period=12,
+    seed=42,
+    n_point_trials=100,
+    n_uq_trials=100,
+    output_dir="results/m4_monthly_s3",
+)
+```
+
+The older fold-based helpers in `s3paper.multiseries_hpo` remain available for
+backward compatibility, but they are deprecated and are not the main
+experimental protocol.
+
+## Legacy single-series examples
 
 ```python
 from s3paper.s3_forecaster_experiment import run_s3_experiment
