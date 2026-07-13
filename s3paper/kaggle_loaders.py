@@ -1500,15 +1500,20 @@ def load_cif_2016(
     series_path = _locate_cif_series_file(root)
 
     if series_path is not None:
-        return _bundle_from_tsf(
+        bundle = _bundle_from_tsf(
             series_path,
             dataset_name="CIF 2016",
-            minimum_train_length=minimum_train_length,
-            maximum_train_length=maximum_train_length,
-            maximum_series=maximum_series,
-            selected_series=selected_series,
             default_horizon=default_horizon,
-        )
+            seasonal_period=12,
+            missing_policy="interpolate",
+            )
+        return _validate_bundle(
+        bundle,
+        minimum_train_length=minimum_train_length,
+        maximum_train_length=maximum_train_length,
+        maximum_series=maximum_series,
+        selected_series=selected_series,
+    )
 
     # ========================================================
     # Existing CSV/XLSX fallback
