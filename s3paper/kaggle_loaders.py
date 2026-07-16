@@ -1364,37 +1364,56 @@ def load_m3_monthly(
         )
 
     else:
-        workbook = _find_file(
+        tsf_path = _find_file(
             root,
             (
-                "m3c.xls",
-                "m3c.xlsx",
-                "*m3*.xls",
-                "*m3*.xlsx",
-                "*month*.csv",
+                "m3_monthly_dataset.tsf",
+                "*m3*monthly*.tsf",
+                "*monthly*.tsf",
+                "*.tsf",
             ),
+            required=False,
         )
 
-        if workbook.suffix.lower() in {".xls", ".xlsx", ".xlsm"}:
-            excel = pd.ExcelFile(workbook)
-            sheet_name = next(
-                (
-                    sheet
-                    for sheet in excel.sheet_names
-                    if "month" in sheet.lower()
-                ),
-                excel.sheet_names[0],
+        if tsf_path is not None:
+            bundle = _bundle_from_tsf(
+                tsf_path,
+                dataset_name="M3_Monthly",
+                default_horizon=default_horizon,
+                seasonal_period=12,
             )
-            frame = pd.read_excel(workbook, sheet_name=sheet_name)
         else:
-            frame = _read_table(workbook)
+            workbook = _find_file(
+                root,
+                (
+                    "m3c.xls",
+                    "m3c.xlsx",
+                    "*m3*.xls",
+                    "*m3*.xlsx",
+                    "*month*.csv",
+                ),
+            )
 
-        bundle = _bundle_from_generic_table(
-            frame,
-            dataset_name="M3_Monthly",
-            default_horizon=default_horizon,
-            seasonal_period=12,
-        )
+            if workbook.suffix.lower() in {".xls", ".xlsx", ".xlsm"}:
+                excel = pd.ExcelFile(workbook)
+                sheet_name = next(
+                    (
+                        sheet
+                        for sheet in excel.sheet_names
+                        if "month" in sheet.lower()
+                    ),
+                    excel.sheet_names[0],
+                )
+                frame = pd.read_excel(workbook, sheet_name=sheet_name)
+            else:
+                frame = _read_table(workbook)
+
+            bundle = _bundle_from_generic_table(
+                frame,
+                dataset_name="M3_Monthly",
+                default_horizon=default_horizon,
+                seasonal_period=12,
+            )
 
     return _validate_bundle(
         bundle,
