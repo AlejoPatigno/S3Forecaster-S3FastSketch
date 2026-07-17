@@ -1,6 +1,6 @@
 # S3Forecaster-S3FastSketch
 
-This package consolidates the repeated experimental code from the CIF, M3, M4, Tourism, and CASAGRES notebooks into one reusable project. Dataset-loading cells remain dataset-specific; all model, optimization, metric, and analysis code is centralized here.
+This package consolidates the repeated experimental code from the CIF, M3, M4, Tourism, and ICMDnotebooks into one reusable project. Dataset-loading cells remain dataset-specific; all model, optimization, metric, and analysis code is centralized here.
 
 ## Project structure
 
