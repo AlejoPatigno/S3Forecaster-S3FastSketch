@@ -7,6 +7,7 @@ from s3paper.ablation_study import run_fastsketch_ablation, run_s3_ablation_stud
 from s3paper.baselines import evaluate_baseline
 from s3paper.data_efficiency import run_data_efficiency_analysis
 from s3paper.multi_prior_robustness import (
+    CallableAutoregressivePrior,
     RollingPrior,
     default_prior_factories,
     run_multi_prior_robustness,
@@ -119,7 +120,11 @@ def test_required_analysis_sections_execute():
         fastsketch_params=fast,
     )
     assert set(priors["summary"]["status"]) == {"ok"}
-    assert set(priors["summary"]["model"]) == {"S3-Forecaster", "S3-FastSketch"}
+    assert set(priors["summary"]["model"]) == {
+        "Prior-only",
+        "S3-Forecaster",
+        "S3-FastSketch",
+    }
 
     s3_output = evaluate_s3_forecaster(train, test, s3)
     residuals = analyze_forecast_residuals(test, s3_output["forecast"])
@@ -158,20 +163,43 @@ def test_chronos_baseline_and_prior_execute_with_mock():
     )
     assert set(result["summary"]["prior"]) == {"chronos"}
     assert set(result["summary"]["status"]) == {"ok"}
-    assert set(result["summary"]["model"]) == {"S3-Forecaster", "S3-FastSketch"}
+    assert set(result["summary"]["model"]) == {
+        "Prior-only",
+        "S3-Forecaster",
+        "S3-FastSketch",
+    }
 
 
-def test_prior_only_evaluation_requires_explicit_opt_in():
+def test_foundation_prior_paths_never_call_fit_predict():
     train, test = _experiment_data()
+    s3, fast = _params()
+
+    class InferenceOnlyPrior(CallableAutoregressivePrior):
+        def __init__(self):
+            super().__init__(
+                lambda history, horizon: np.repeat(float(history.iloc[-1]), horizon),
+                min_history=len(train) + len(test) + 1,
+                fallback="last",
+                name="inference_only",
+            )
+
+        def fit_predict(self, series, horizon):
+            raise AssertionError("Foundation-model paths must not call fit_predict().")
 
     result = run_multi_prior_robustness(
         train,
         test,
-        {"rolling": lambda: RollingPrior(6)},
-        include_prior_only=True,
+        {"inference_only": InferenceOnlyPrior},
+        s3_params=s3,
+        fastsketch_params=fast,
     )
 
-    assert result["summary"]["model"].tolist() == ["Prior-only"]
+    assert set(result["summary"]["status"]) == {"ok"}
+    assert set(result["summary"]["model"]) == {
+        "Prior-only",
+        "S3-Forecaster",
+        "S3-FastSketch",
+    }
 
 
 def test_chronos_predict_df_output_shape_is_supported():

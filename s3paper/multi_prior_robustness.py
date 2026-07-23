@@ -111,6 +111,9 @@ class CallableAutoregressivePrior:
         self.min_history = int(min_history)
         self.fallback = fallback
         self.name = name
+        self._history: pd.Series | None = None
+        self._fitted: pd.Series | None = None
+        self._pending_prediction: float | None = None
 
     def _fallback(self, history: pd.Series) -> float:
         if len(history) == 0:
@@ -136,7 +139,20 @@ class CallableAutoregressivePrior:
             current.loc[make_future_index(current, 1)[0]] = value
         return np.asarray(predictions)
 
-    def fit_predict(self, series: Any, horizon: int):
+    def predict_from_history(self, series: Any, horizon: int) -> pd.Series:
+        """Run zero-shot inference without fitting or constructing in-sample values."""
+
+        history = ensure_series(series)
+        values = self._predict_vector(history, int(horizon))
+        return pd.Series(
+            values,
+            index=make_future_index(history, int(horizon)),
+            name="forecast",
+        )
+
+    def fit(self, series: Any) -> "CallableAutoregressivePrior":
+        """Initialize causal history using inference only; model weights stay frozen."""
+
         y = ensure_series(series)
         fitted = np.zeros(len(y), dtype=float)
         for t in range(len(y)):
@@ -148,11 +164,76 @@ class CallableAutoregressivePrior:
             )
         if len(y):
             fitted[0] = float(y.iloc[0])
-        future = self._predict_vector(y, horizon)
-        return (
-            pd.Series(fitted, index=y.index, name="fitted"),
-            pd.Series(future, index=make_future_index(y, horizon), name="forecast"),
+        self._history = y.copy()
+        self._fitted = pd.Series(fitted, index=y.index, name="fitted")
+        self._pending_prediction = None
+        return self
+
+    def fitted_values(self) -> pd.Series:
+        if self._fitted is None:
+            raise RuntimeError("Prior must be initialized before fitted_values().")
+        return self._fitted.copy()
+
+    def predict(self, horizon: int) -> pd.Series:
+        if self._history is None:
+            raise RuntimeError("Prior must be initialized before predict().")
+        forecast = self.predict_from_history(self._history, int(horizon))
+        if int(horizon) == 1:
+            self._pending_prediction = float(forecast.iloc[0])
+        return forecast
+
+    def predict_one(self) -> float:
+        return float(self.predict(1).iloc[0])
+
+    def update(
+        self,
+        timestamp_or_observation: Any,
+        observed_value: float | None = None,
+    ) -> "CallableAutoregressivePrior":
+        if self._history is None:
+            raise RuntimeError("Prior must be initialized before update().")
+        if observed_value is None:
+            next_index = make_future_index(self._history, 1)[0]
+            observation = float(timestamp_or_observation)
+        else:
+            next_index = timestamp_or_observation
+            observation = float(observed_value)
+        fitted_value = self._pending_prediction
+        if fitted_value is None:
+            fitted_value = (
+                self._fallback(self._history)
+                if len(self._history) < self.min_history
+                else float(self._predict_vector(self._history, 1)[-1])
+            )
+        self._history.loc[next_index] = observation
+        self._fitted = pd.concat(
+            [
+                self.fitted_values(),
+                pd.Series([fitted_value], index=[next_index], name="fitted"),
+            ]
         )
+        self._pending_prediction = None
+        return self
+
+    def get_params(self) -> dict[str, Any]:
+        return {"prior_name": self.name, "min_history": self.min_history}
+
+    def clone(self) -> "CallableAutoregressivePrior":
+        return copy.deepcopy(self)
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "prior_name": self.name,
+            "fitted": self._history is not None,
+            "n_observations": 0 if self._history is None else len(self._history),
+            "trainable": False,
+        }
+
+    def fit_predict(self, series: Any, horizon: int):
+        """Backward-compatible API; foundation-model paths use the causal API."""
+
+        self.fit(series)
+        return self.fitted_values(), self.predict(horizon)
 
 
 class ChronosPrior(CallableAutoregressivePrior):
@@ -217,7 +298,10 @@ def evaluate_prior_only(
     train = ensure_series(train_series)
     test = ensure_series(test_series)
     start = time.perf_counter()
-    _, forecast = prior.fit_predict(train, len(test))
+    if hasattr(prior, "predict_from_history"):
+        forecast = prior.predict_from_history(train, len(test))
+    else:
+        _, forecast = prior.fit_predict(train, len(test))
     elapsed = time.perf_counter() - start
     out = parse_forecast_output(forecast)
     metrics = evaluate_forecast(
@@ -352,16 +436,15 @@ def run_multi_prior_robustness(
     fastsketch_params: Optional[dict] = None,
     s3_uq: Optional[dict] = None,
     fastsketch_uq: Optional[dict] = None,
-    include_prior_only: bool = False,
+    include_prior_only: bool = True,
     alpha: float = 0.10,
     seasonal_period: int = 12,
 ):
     """Evaluate fixed model hyperparameters under alternative foundation priors.
 
-    Prior-only baselines are excluded by default because fitting them is a
-    separate baseline experiment, not part of the S3 transferability analysis.
-    Set ``include_prior_only=True`` only when that additional comparison is
-    explicitly required.
+    Prior-only baselines are included by default. Pretrained callable priors use
+    direct zero-shot inference; statistical priors retain their native fitting
+    behavior because estimating their parameters is part of those models.
     """
 
     rows, forecasts, models = [], {}, {}

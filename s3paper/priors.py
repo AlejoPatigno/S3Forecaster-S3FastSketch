@@ -407,7 +407,7 @@ class ChronosPrior:
             fallback="last",
         )
 
-    def _adapter(self) -> "FitPredictPriorAdapter":
+    def _adapter(self) -> CausalPrior:
         if self.model_or_factory is None and self.predict_fn is None:
             try:
                 import chronos  # noqa: F401
@@ -416,7 +416,7 @@ class ChronosPrior:
                     "Chronos prior requested but chronos-forecasting is unavailable; "
                     "pass prior__chronos_model_id with installed dependencies or a custom predictor."
                 ) from exc
-        return FitPredictPriorAdapter(self._make_legacy())
+        return self._make_legacy()
 
     def fit(self, series: Any) -> CausalPrior:
         self._inner = self._adapter().fit(series)
@@ -663,7 +663,7 @@ class TimesFMPrior:
             name=self.name,
         )
 
-    def _adapter(self) -> "FitPredictPriorAdapter":
+    def _adapter(self) -> CausalPrior:
         if self.model_or_factory is None and self.predict_fn is None:
             try:
                 import timesfm  # noqa: F401
@@ -672,7 +672,7 @@ class TimesFMPrior:
                     "TimesFM prior requested but TimesFM is unavailable; "
                     "install 'timesfm[torch]' or provide a custom predictor."
                 ) from exc
-        return FitPredictPriorAdapter(self._make_legacy())
+        return self._make_legacy()
 
     def fit(self, series: Any) -> CausalPrior:
         self._inner = self._adapter().fit(series)

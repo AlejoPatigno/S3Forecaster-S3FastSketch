@@ -336,9 +336,10 @@ prior_results = run_multi_prior_robustness(
 )
 ```
 
-The robustness run evaluates only the S3 models by default. Prior-only
-baselines perform their own fit and are therefore excluded unless the separate
-comparison is explicitly requested with `include_prior_only=True`.
+The robustness run includes the Prior-only comparison. Pretrained callable
+priors such as Chronos and TimesFM run zero-shot inference without
+`fit_predict`; statistical priors such as ETS and Prophet still estimate their
+own parameters because that fitting step defines those models.
 
 Custom foundation models, including TimesFM, Moirai, and TimeGPT-like models, can be supplied through `CallableAutoregressivePrior` without coupling the project to a particular external API.
 
