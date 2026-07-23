@@ -352,11 +352,17 @@ def run_multi_prior_robustness(
     fastsketch_params: Optional[dict] = None,
     s3_uq: Optional[dict] = None,
     fastsketch_uq: Optional[dict] = None,
-    include_prior_only: bool = True,
+    include_prior_only: bool = False,
     alpha: float = 0.10,
     seasonal_period: int = 12,
 ):
-    """Evaluate fixed model hyperparameters under alternative foundation priors."""
+    """Evaluate fixed model hyperparameters under alternative foundation priors.
+
+    Prior-only baselines are excluded by default because fitting them is a
+    separate baseline experiment, not part of the S3 transferability analysis.
+    Set ``include_prior_only=True`` only when that additional comparison is
+    explicitly required.
+    """
 
     rows, forecasts, models = [], {}, {}
     for prior_name, factory in prior_factories.items():

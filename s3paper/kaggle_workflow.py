@@ -43,7 +43,10 @@ from s3paper.result_store import (
 from s3paper.rolling_protocol import evaluate_rolling_model
 from s3paper.s3_fastsketch_experiment import evaluate_fastsketch
 from s3paper.s3_forecaster_experiment import evaluate_s3_forecaster
-from s3paper.single_series_transfer_hpo import run_single_series_hpo_transfer_experiment
+from s3paper.single_series_transfer_hpo import (
+    run_single_series_hpo_transfer_experiment,
+    temporal_train_cal_test_split,
+)
 
 from s3paper.kaggle_loaders import DatasetBundle
 
@@ -601,6 +604,178 @@ def default_baseline_parameters(
             "input_window": min(12, seasonal_period),
             "kernel_size": min(7, seasonal_period),
         },
+    }
+
+
+def default_architecture_baseline_parameters(
+    seasonal_period: int = 12,
+    *,
+    chronos_model_id: str = "amazon/chronos-bolt-small",
+    include_chronos: bool = True,
+) -> dict[str, dict[str, Any]]:
+    window = min(12, int(seasonal_period))
+    parameters: dict[str, dict[str, Any]] = {
+        "LSTM": {
+            "input_window": window,
+            "n_layers": 1,
+            "units_1": 32,
+            "dropout": 0.10,
+            "dense_units": 32,
+            "learning_rate": 1e-3,
+            "batch_size": 16,
+            "epochs": 80,
+        },
+        "CNN": {
+            "input_window": window,
+            "filters": 32,
+            "kernel_size": 3,
+            "dropout": 0.10,
+            "dense_units": 32,
+            "learning_rate": 1e-3,
+            "batch_size": 16,
+            "epochs": 80,
+        },
+        "NLinear": {
+            "window_size": window,
+            "learning_rate": 1e-3,
+            "weight_decay": 0.0,
+            "epochs": 120,
+            "patience": 15,
+            "batch_size": 16,
+        },
+        "DLinear": {
+            "window_size": window,
+            "kernel_size": min(7, window),
+            "learning_rate": 1e-3,
+            "weight_decay": 0.0,
+            "epochs": 120,
+            "patience": 15,
+            "batch_size": 16,
+        },
+    }
+
+    if include_chronos:
+        parameters["Chronos"] = {
+            "model_id": chronos_model_id,
+            "device_map": "cpu",
+        }
+
+    return parameters
+
+
+def evaluate_architecture_baselines_transfer_protocol(
+    series_map: Mapping[str, Any],
+    evaluation_ids: Sequence[str],
+    *,
+    baseline_parameters: Mapping[str, Mapping[str, Any]] | None = None,
+    seasonal_period: int = 12,
+    target_coverage: float = 0.90,
+    train_ratio: float = 0.64,
+    calibration_ratio: float = 0.16,
+    test_ratio: float = 0.20,
+    aci_step_size: float = 0.05,
+    interval_scale: float = 1.0,
+    minimum_width_factor: float = 0.0,
+) -> dict[str, pd.DataFrame]:
+    baseline_parameters = (
+        dict(baseline_parameters)
+        if baseline_parameters is not None
+        else default_architecture_baseline_parameters(seasonal_period)
+    )
+    alpha = 1.0 - float(target_coverage)
+
+    rows: list[dict[str, Any]] = []
+    forecasts: list[pd.DataFrame] = []
+    failures: list[dict[str, Any]] = []
+
+    for series_id in evaluation_ids:
+        series_id = str(series_id)
+
+        try:
+            train, calibration, test = temporal_train_cal_test_split(
+                series_map[series_id],
+                train_ratio=train_ratio,
+                calibration_ratio=calibration_ratio,
+                test_ratio=test_ratio,
+            )
+            fit_history = pd.concat([train, calibration])
+            minimum_width = minimum_width_factor * seasonal_naive_scale(
+                fit_history,
+                seasonal_period=seasonal_period,
+            )
+
+        except Exception as exc:
+            failures.append(
+                {
+                    "series_id": series_id,
+                    "model": "ALL_ARCHITECTURE_BASELINES",
+                    "error": str(exc),
+                }
+            )
+            continue
+
+        for model_name, params in baseline_parameters.items():
+            started = time.perf_counter()
+
+            try:
+                model = ConformalizedBaseline(
+                    model_name,
+                    dict(params),
+                    alpha=alpha,
+                    aci_step_size=aci_step_size,
+                    interval_scale=interval_scale,
+                    minimum_width=minimum_width,
+                )
+
+                result = evaluate_rolling_model(
+                    model,
+                    fit_history,
+                    test,
+                    alpha=alpha,
+                    seasonal_period=seasonal_period,
+                )
+
+                elapsed = time.perf_counter() - started
+                metric_row = {
+                    "series_id": series_id,
+                    "model": model_name,
+                    **result["metrics"],
+                    "elapsed_seconds": elapsed,
+                    "status": "ok",
+                    "error": "",
+                }
+
+                forecast = result["forecast"].copy()
+                forecast["series_id"] = series_id
+                forecast["model"] = model_name
+
+                rows.append(metric_row)
+                forecasts.append(forecast)
+
+            except Exception as exc:
+                elapsed = time.perf_counter() - started
+                error = str(exc)
+                rows.append(
+                    {
+                        "series_id": series_id,
+                        "model": model_name,
+                        "elapsed_seconds": elapsed,
+                        "status": "failed",
+                        "error": error,
+                    }
+                )
+                failures.append(
+                    {
+                        "series_id": series_id,
+                        "model": model_name,
+                        "error": error,
+                    }
+                )
+
+    return {
+        "per_series_metrics": pd.DataFrame(rows),
+        "forecasts": pd.concat(forecasts) if forecasts else pd.DataFrame(),
+        "failed_series": pd.DataFrame(failures),
     }
 
 

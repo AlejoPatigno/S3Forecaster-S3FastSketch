@@ -119,6 +119,7 @@ def test_required_analysis_sections_execute():
         fastsketch_params=fast,
     )
     assert set(priors["summary"]["status"]) == {"ok"}
+    assert set(priors["summary"]["model"]) == {"S3-Forecaster", "S3-FastSketch"}
 
     s3_output = evaluate_s3_forecaster(train, test, s3)
     residuals = analyze_forecast_residuals(test, s3_output["forecast"])
@@ -157,6 +158,20 @@ def test_chronos_baseline_and_prior_execute_with_mock():
     )
     assert set(result["summary"]["prior"]) == {"chronos"}
     assert set(result["summary"]["status"]) == {"ok"}
+    assert set(result["summary"]["model"]) == {"S3-Forecaster", "S3-FastSketch"}
+
+
+def test_prior_only_evaluation_requires_explicit_opt_in():
+    train, test = _experiment_data()
+
+    result = run_multi_prior_robustness(
+        train,
+        test,
+        {"rolling": lambda: RollingPrior(6)},
+        include_prior_only=True,
+    )
+
+    assert result["summary"]["model"].tolist() == ["Prior-only"]
 
 
 def test_chronos_predict_df_output_shape_is_supported():

@@ -1614,166 +1614,267 @@ def _parse_month_column(values: pd.Series) -> pd.Series:
     return parsed.dt.to_period("M").dt.to_timestamp("M")
 
 
-def load_icmd_monthly(
-    dataset_path: str | Path,
-    *,
-    date_column: str | None = None,
-    target_column: str | None = None,
-    series_id_column: str | None = None,
-    selected_series: Sequence[str] | None = None,
-    test_horizon: int = 10,
-    minimum_train_length: int = 24,
-    maximum_train_length: int | None = 199,
-    maximum_series: int | None = None,
-    positive_sales_only: bool = True,
-    fill_missing_months: float | None = 0.0,
-    sheet_name: str | int = 0,
-) -> DatasetBundle:
-    path = Path(dataset_path)
+ICMD_PRODUCT_PREFIXES = (
+    "LADRILLO FAROL PH DE 12 RAYADO ROJO PRIMERA",
+    "LADRILLO FAROL PH DE 12 RAYADO ROJO COMERCIAL",
+)
 
-    if path.is_dir():
-        path = _find_file(
-            path,
-            (
-                "*factura*.parquet",
-                "*factura*.xlsx",
-                "*factura*.xls",
-                "*factura*.csv",
-                "*casagres*.xlsx",
-                "*icmd*.xlsx",
-                "*.parquet",
-                "*.xlsx",
-                "*.xls",
-                "*.csv",
-            ),
+
+def locate_icmd_csv(search_root: str | Path = Path("/kaggle/input")) -> Path:
+    search_root = Path(search_root)
+
+    if search_root.is_file():
+        return search_root
+
+    candidates = list(search_root.rglob("df_preprocessed.csv"))
+
+    if not candidates:
+        candidates = [
+            path
+            for path in search_root.rglob("*.csv")
+            if "icmd" in str(path).lower()
+        ]
+
+    if not candidates:
+        candidates = [
+            path
+            for path in search_root.rglob("*.csv")
+            if "factura" in str(path).lower()
+            or "casagres" in str(path).lower()
+            or "preprocessed" in str(path).lower()
+        ]
+
+    if not candidates:
+        raise FileNotFoundError(
+            f"No ICMD CSV file was found below {search_root}."
         )
 
-    frame = _read_table(path, sheet_name=sheet_name)
-
-    date_column = date_column or _column_by_candidates(
-        frame,
-        (
-            "Periodo",
-            "Fecha",
-            "Date",
-            "Mes",
-            "AñoMes",
-            "YearMonth",
-        ),
-        required=True,
-    )
-    target_column = target_column or _column_by_candidates(
-        frame,
-        (
-            "Valor Venta",
-            "ValorVenta",
-            "valor_venta",
-            "SalesValue",
-            "Valor Neto",
-            "Venta Neta",
-        ),
-        required=True,
-    )
-    series_id_column = series_id_column or _column_by_candidates(
-        frame,
-        (
-            "Material",
-            "Referencia",
-            "Producto",
-            "Codigo Material",
-            "Código Material",
-            "Product",
-            "ProductID",
-        ),
-        required=False,
+    candidates.sort(
+        key=lambda path: (
+            "df_preprocessed" not in path.name.lower(),
+            len(str(path)),
+        )
     )
 
-    working = frame.copy()
-    working["_month"] = _parse_month_column(working[date_column])
-    working["_target"] = _parse_locale_number(working[target_column])
-    working = working.dropna(subset=["_month", "_target"])
+    selected = candidates[0]
+    print("Selected dataset file:", selected)
+
+    return selected
+
+
+def load_icmd_monthly(
+    search_root: str | Path = Path("/kaggle/input"),
+    *,
+    csv_path: str | Path | None = None,
+    product_prefixes: tuple[str, ...] = ICMD_PRODUCT_PREFIXES,
+    period_col: str = "Periodo",
+    product_col: str = "Descripcion Producto",
+    target_col: str = "Valor Venta",
+    series_id: str = "ICMD_LADRILLO_FAROL_PH12",
+    dataset_name: str = "ICMD",
+    test_ratio: float = 0.20,
+    test_horizon: int | None = None,
+    minimum_months: int = 24,
+    minimum_train_length: int = 18,
+    maximum_train_length: int | None = 199,
+    fill_missing_months: float = 0.0,
+    positive_sales_only: bool = True,
+    print_summary: bool = True,
+    selected_series: Sequence[str] | None = None,
+    maximum_series: int | None = None,
+) -> DatasetBundle:
+    """
+    Loads the ICMD monthly demand series as a DatasetBundle compatible with
+    run_common_kaggle_pipeline.
+
+    The function follows the same construction used in the original notebook:
+
+    1. Locate df_preprocessed.csv under /kaggle/input.
+    2. Keep positive sales.
+    3. Parse Periodo as YYYYMM.
+    4. Select the configured product prefixes.
+    5. Aggregate Valor Venta by month.
+    6. Complete the monthly index.
+    7. Fill missing months with zero.
+    8. Apply an 80/20 chronological split unless test_horizon is provided.
+    """
+
+    if csv_path is None:
+        csv_path = locate_icmd_csv(search_root)
+    else:
+        csv_path = Path(csv_path)
+        if not csv_path.exists():
+            raise FileNotFoundError(csv_path)
+
+    df_facturas = pd.read_csv(csv_path)
+
+    required_columns = {
+        period_col,
+        product_col,
+        target_col,
+    }
+    missing_columns = required_columns.difference(df_facturas.columns)
+
+    if missing_columns:
+        raise KeyError(
+            f"Missing required ICMD columns: {sorted(missing_columns)}. "
+            f"Available columns: {list(df_facturas.columns)}"
+        )
+
+    df = df_facturas.copy()
+
+    df[target_col] = pd.to_numeric(
+        df[target_col],
+        errors="coerce",
+    )
 
     if positive_sales_only:
-        working = working[working["_target"] > 0.0]
-
-    if series_id_column is None:
-        working["_series_id"] = "ICMD"
-        series_id_column = "_series_id"
+        df = df[df[target_col] > 0].copy()
     else:
-        working[series_id_column] = working[series_id_column].astype(str)
+        df = df[df[target_col].notna()].copy()
 
-    if selected_series is not None:
-        allowed = {str(value) for value in selected_series}
-        working = working[working[series_id_column].isin(allowed)]
-
-    monthly = (
-        working.groupby([series_id_column, "_month"], as_index=False)["_target"]
-        .sum()
-        .sort_values([series_id_column, "_month"])
+    period_text = (
+        df[period_col]
+        .astype(str)
+        .str.replace(r"\.0$", "", regex=True)
+        .str.strip()
     )
 
-    train_map: dict[str, pd.Series] = {}
-    test_map: dict[str, pd.Series] = {}
-    metadata_rows: list[dict[str, Any]] = []
+    df[period_col] = pd.to_datetime(
+        period_text,
+        format="%Y%m",
+        errors="coerce",
+    )
 
-    for series_id, group in monthly.groupby(series_id_column):
-        group = group.sort_values("_month")
+    df = df.dropna(subset=[period_col])
 
-        start = pd.Period(group["_month"].min(), freq="M")
-        end = pd.Period(group["_month"].max(), freq="M")
-        complete_index = pd.period_range(start=start, end=end, freq="M").to_timestamp("M")
-
-        series = pd.Series(
-            group["_target"].to_numpy(dtype=float),
-            index=pd.DatetimeIndex(group["_month"]),
-            name=str(series_id),
+    product_mask = (
+        df[product_col]
+        .astype(str)
+        .str.startswith(
+            product_prefixes,
+            na=False,
         )
-        series = series.groupby(level=0).sum().reindex(complete_index)
+    )
 
-        if fill_missing_months is None and series.isna().any():
-            raise ValueError(
-                f"ICMD/{series_id} contiene meses faltantes. "
-                "Defina fill_missing_months explícitamente."
-            )
+    selected_sales = df.loc[product_mask].copy()
 
-        if fill_missing_months is not None:
-            series = series.fillna(float(fill_missing_months))
+    if selected_sales.empty:
+        raise ValueError(
+            "No rows matched the configured ICMD product prefixes."
+        )
 
-        if len(series) <= int(test_horizon):
-            continue
+    monthly_sales = (
+        selected_sales
+        .groupby(period_col)[target_col]
+        .sum()
+        .sort_index()
+        .asfreq("MS")
+    )
 
-        train_map[str(series_id)] = series.iloc[:-int(test_horizon)].copy()
-        test_map[str(series_id)] = series.iloc[-int(test_horizon):].copy()
+    missing_months = int(monthly_sales.isna().sum())
+    monthly_sales = monthly_sales.fillna(float(fill_missing_months)).astype(float)
+    monthly_sales.name = "y"
 
-        metadata_rows.append(
+    if len(monthly_sales) < int(minimum_months):
+        raise ValueError(
+            f"Only {len(monthly_sales)} monthly observations are available; "
+            f"at least {minimum_months} are required."
+        )
+
+    if test_horizon is None:
+        test_size = max(
+            1,
+            int(np.ceil(len(monthly_sales) * float(test_ratio))),
+        )
+    else:
+        test_size = int(test_horizon)
+
+    if test_size <= 0:
+        raise ValueError("test_size must be positive.")
+
+    if test_size >= len(monthly_sales):
+        raise ValueError(
+            f"test_size={test_size} is not valid for a series of length "
+            f"{len(monthly_sales)}."
+        )
+
+    split_index = len(monthly_sales) - test_size
+
+    if split_index < int(minimum_train_length):
+        raise ValueError(
+            f"The chronological split leaves only {split_index} training "
+            f"observations; at least {minimum_train_length} are required."
+        )
+
+    raw_train = monthly_sales.iloc[:split_index].rename("y")
+    raw_test = monthly_sales.iloc[split_index:].rename("y")
+
+    if maximum_train_length is not None and len(raw_train) > int(maximum_train_length):
+        raw_train = raw_train.iloc[-int(maximum_train_length):].copy()
+
+    train_series_map = {
+        series_id: raw_train.astype(float),
+    }
+    test_series_map = {
+        series_id: raw_test.astype(float),
+    }
+
+    info_df = pd.DataFrame(
+        [
             {
-                "dataset": "ICMD",
-                "series_id": str(series_id),
-                "n_transactions": int(
-                    (working[series_id_column] == str(series_id)).sum()
-                ),
-                "n_months": len(series),
-                "forecast_horizon": int(test_horizon),
-                "start_timestamp": series.index.min(),
-                "end_timestamp": series.index.max(),
+                "dataset": dataset_name,
+                "series_id": series_id,
+                "products": " | ".join(product_prefixes),
+                "train_length": len(raw_train),
+                "test_length": len(raw_test),
+                "total_monthly_length": len(monthly_sales),
+                "missing_months_filled": missing_months,
+                "missing_month_fill_value": float(fill_missing_months),
+                "source_file": str(csv_path),
+                "period_col": period_col,
+                "product_col": product_col,
+                "target_col": target_col,
+                "test_ratio": float(test_ratio),
+                "test_horizon": int(test_size),
+                "train_start": raw_train.index.min(),
+                "train_end": raw_train.index.max(),
+                "test_start": raw_test.index.min(),
+                "test_end": raw_test.index.max(),
+                "target_min": float(monthly_sales.min()),
+                "target_max": float(monthly_sales.max()),
+                "target_mean": float(monthly_sales.mean()),
+                "seasonal_period": 12,
             }
-        )
+        ]
+    )
+
+    if print_summary:
+        print("Selected series:", series_id)
+        print("Train length:", len(raw_train))
+        print("Test horizon:", len(raw_test))
+        print("Missing months filled with zero:", missing_months)
+
+        try:
+            display(info_df)
+        except Exception:
+            print(info_df)
 
     bundle = DatasetBundle(
-        name="ICMD",
-        train_series_map=train_map,
-        test_series_map=test_map,
-        metadata=pd.DataFrame(metadata_rows),
+        name=dataset_name,
+        train_series_map=train_series_map,
+        test_series_map=test_series_map,
+        metadata=info_df,
         seasonal_period=12,
     )
 
-    return _validate_bundle(
-        bundle,
-        minimum_train_length=minimum_train_length,
-        maximum_train_length=maximum_train_length,
-        maximum_series=maximum_series,
-        selected_series=selected_series,
-    )
+    if selected_series is not None:
+        bundle = bundle.subset(selected_series)
+
+    if maximum_series is not None:
+        bundle = bundle.subset(bundle.series_ids[: int(maximum_series)])
+
+    return bundle
 
 
 # ============================================================
