@@ -22,6 +22,7 @@ from .s3_forecaster_experiment import (
     optimize_s3_uq_holdout,
 )
 from .utils import ensure_series
+from .priors import validate_prior_names
 
 
 MODEL_ALIASES = {
@@ -145,6 +146,7 @@ def optimize_on_development_series(
     calibration_ratio: float = 0.16,
     test_ratio: float = 0.20,
     development_series_id: str | None = None,
+    prior_names: tuple[str, ...] | list[str] | None = None,
 ):
     optimize_point, optimize_uq, evaluate_fn = _model_functions(model_name)
     minimum_length = 30
@@ -166,12 +168,14 @@ def optimize_on_development_series(
         calibration_ratio=calibration_ratio,
         test_ratio=test_ratio,
     )
+    effective_prior_names = validate_prior_names(prior_names)
     point_study = optimize_point(
         train,
         calibration,
         seasonal_period=seasonal_period,
         n_trials=n_point_trials,
         seed=seed,
+        prior_names=effective_prior_names,
     )
     best_point_params = dict(point_study.best_params)
     uq_study = optimize_uq(
@@ -196,6 +200,7 @@ def optimize_on_development_series(
     )
     return {
         "development_series_id": development_series_id,
+        "prior_names": effective_prior_names,
         "eligible_series_ids": eligible,
         "excluded_series": exclusions,
         "point_study": point_study,
@@ -375,6 +380,7 @@ def run_single_series_hpo_transfer_experiment(
     test_ratio=0.20,
     git_commit=None,
     output_dir: str | Path | None = None,
+    prior_names: tuple[str, ...] | list[str] | None = None,
 ):
     model_name = _canonical_model_name(model_name)
     hpo = optimize_on_development_series(
@@ -389,6 +395,7 @@ def run_single_series_hpo_transfer_experiment(
         calibration_ratio=calibration_ratio,
         test_ratio=test_ratio,
         development_series_id=development_series_id,
+        prior_names=prior_names,
     )
     alpha = 1.0 - float(target_coverage)
     evaluation = evaluate_frozen_configuration_on_collection(
@@ -418,6 +425,7 @@ def run_single_series_hpo_transfer_experiment(
         "cross_validation": False,
         "one_hpo_series_per_dataset": True,
         "hpo_repeated_per_series": False,
+        "prior_names": list(hpo["prior_names"]),
         "n_point_trials": int(n_point_trials),
         "n_uq_trials": int(n_uq_trials),
         "target_coverage": float(target_coverage),

@@ -407,7 +407,7 @@ class ChronosPrior:
             fallback="last",
         )
 
-    def _adapter(self) -> "FitPredictPriorAdapter":
+    def _adapter(self) -> CausalPrior:
         if self.model_or_factory is None and self.predict_fn is None:
             try:
                 import chronos  # noqa: F401
@@ -416,7 +416,7 @@ class ChronosPrior:
                     "Chronos prior requested but chronos-forecasting is unavailable; "
                     "pass prior__chronos_model_id with installed dependencies or a custom predictor."
                 ) from exc
-        return FitPredictPriorAdapter(self._make_legacy())
+        return self._make_legacy()
 
     def fit(self, series: Any) -> CausalPrior:
         self._inner = self._adapter().fit(series)
@@ -663,7 +663,7 @@ class TimesFMPrior:
             name=self.name,
         )
 
-    def _adapter(self) -> "FitPredictPriorAdapter":
+    def _adapter(self) -> CausalPrior:
         if self.model_or_factory is None and self.predict_fn is None:
             try:
                 import timesfm  # noqa: F401
@@ -672,7 +672,7 @@ class TimesFMPrior:
                     "TimesFM prior requested but TimesFM is unavailable; "
                     "install 'timesfm[torch]' or provide a custom predictor."
                 ) from exc
-        return FitPredictPriorAdapter(self._make_legacy())
+        return self._make_legacy()
 
     def fit(self, series: Any) -> CausalPrior:
         self._inner = self._adapter().fit(series)
@@ -727,10 +727,21 @@ PRIOR_REGISTRY = {
 
 MANDATORY_PRIOR_NAMES = ("causal_rolling_mean", "seasonal_naive", "ets", "theta")
 OPTIONAL_PRIOR_NAMES = ("chronos", "timesfm")
+HPO_PRIOR_NAMES = MANDATORY_PRIOR_NAMES + OPTIONAL_PRIOR_NAMES
 
 
 def normalize_prior_name(prior_name: str) -> str:
     return "causal_rolling_mean" if prior_name == "rolling_mean" else str(prior_name)
+
+
+def validate_prior_names(prior_names: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
+    names = tuple(normalize_prior_name(name) for name in (prior_names or MANDATORY_PRIOR_NAMES))
+    if not names:
+        raise ValueError("prior_names must contain at least one prior.")
+    unknown = sorted(set(names) - set(HPO_PRIOR_NAMES))
+    if unknown:
+        raise ValueError(f"Unknown priors {unknown}. Available: {list(HPO_PRIOR_NAMES)}")
+    return names
 
 
 def available_prior_names(include_optional: bool = False) -> tuple[str, ...]:
@@ -775,6 +786,8 @@ def prior_params_from_namespace(params: dict[str, Any]) -> dict[str, Any]:
     elif prior_name == "timesfm":
         if "prior__timesfm_model_id" in params:
             out["model_id"] = params["prior__timesfm_model_id"]
+        if "prior__timesfm_max_context" in params:
+            out["max_context"] = params["prior__timesfm_max_context"]
     return out
 
 
@@ -795,8 +808,7 @@ def suggest_prior_params(
     seasonal_period: int = 12,
     prior_names: tuple[str, ...] | list[str] | None = None,
 ) -> dict[str, Any]:
-    names = tuple(prior_names or MANDATORY_PRIOR_NAMES)
-    names = tuple(normalize_prior_name(name) for name in names)
+    names = validate_prior_names(prior_names)
     prior_name = trial.suggest_categorical("prior_name", list(names))
     params: dict[str, Any] = {"prior_name": prior_name}
     if prior_name == "causal_rolling_mean":
@@ -835,7 +847,37 @@ def suggest_prior_params(
             "prior__timesfm_model_id",
             ["google/timesfm-2.5-200m-pytorch"],
         )
+        params["prior__timesfm_max_context"] = trial.suggest_categorical(
+            "prior__timesfm_max_context",
+            [512, 1024],
+        )
     return params
+
+
+def override_only_prior(
+    best_point_params: dict[str, Any],
+    prior_override: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Replace only the prior namespace while preserving model hyperparameters."""
+
+    if prior_override is None:
+        return dict(best_point_params)
+    if "prior_name" not in prior_override:
+        raise ValueError("prior_override must define prior_name.")
+    result = {
+        key: value
+        for key, value in dict(best_point_params).items()
+        if key != "prior_name" and not key.startswith("prior__") and key != "foundation_window"
+    }
+    result.update(prior_override)
+    prior_name = normalize_prior_name(result["prior_name"])
+    validate_prior_names([prior_name])
+    result["prior_name"] = prior_name
+    if prior_name == "causal_rolling_mean" and "prior__window" not in result:
+        legacy_window = best_point_params.get("prior__window", best_point_params.get("foundation_window"))
+        if legacy_window is not None:
+            result["prior__window"] = legacy_window
+    return result
 
 
 def build_prior(prior_name: str = "causal_rolling_mean", **params: Any) -> CausalPrior:

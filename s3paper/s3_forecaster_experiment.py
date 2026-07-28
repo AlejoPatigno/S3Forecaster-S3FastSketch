@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from .metrics import evaluate_forecast, seasonal_naive_scale
-from .priors import MANDATORY_PRIOR_NAMES, split_model_prior_params, suggest_prior_params
+from .priors import MANDATORY_PRIOR_NAMES, split_model_prior_params, suggest_prior_params, validate_prior_names
 from .rolling_protocol import evaluate_rolling_model
 from .s3_forecaster import S3Forecaster
 from .temporal_cv import make_expanding_window_folds, aggregate_scores
@@ -130,6 +130,7 @@ def optimize_s3_forecaster_holdout(
 
     import optuna
 
+    effective_prior_names = validate_prior_names(prior_names)
     train = ensure_series(train_series, name="train")
     calibration = ensure_series(calibration_series, name="calibration")
 
@@ -138,7 +139,7 @@ def optimize_s3_forecaster_holdout(
             trial,
             train_length=len(train),
             seasonal_period=seasonal_period,
-            prior_names=prior_names,
+            prior_names=effective_prior_names,
         )
         try:
             model_params, prior_name, prior_params = split_model_prior_params(params)
@@ -161,6 +162,7 @@ def optimize_s3_forecaster_holdout(
     study = optuna.create_study(
         direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed)
     )
+    study.set_user_attr("prior_names", list(effective_prior_names))
     study.optimize(objective, n_trials=int(n_trials), show_progress_bar=False)
     study.set_user_attr("cross_validation", False)
     study.set_user_attr("holdout_protocol", "train_calibration")

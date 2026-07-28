@@ -183,7 +183,7 @@ fast_result = run_fastsketch_experiment(
 
 Both functions optimize on a chronological holdout extracted from the training set. The test set is used once for final evaluation.
 
-The proposed-model HPO objective includes the prior as a first-class hyperparameter. Mandatory lightweight choices are `causal_rolling_mean`, `seasonal_naive`, `ets`, and `theta`; optional foundation choices `chronos` and `timesfm` fail explicitly if their adapters or dependencies are unavailable. Prior-specific parameters are stored with `prior__*` names such as `prior__window`, `prior__seasonal_period`, `prior__ets_trend`, `prior__ets_damped`, and `prior__theta_period`.
+The proposed-model HPO objective includes the prior as a first-class hyperparameter. The notebook workflow propagates the effective list `causal_rolling_mean`, `seasonal_naive`, `ets`, `theta`, `chronos`, and `timesfm` into both S3 holdout studies and records it in study/run metadata. Foundation dependencies are never silently excluded. Prior-specific parameters stay under `prior__*`; in particular, TimesFM uses `prior__timesfm_max_context`, while `foundation_window` is only a legacy alias for the rolling prior.
 
 ## Baselines
 
@@ -317,13 +317,13 @@ from s3paper.multi_prior_robustness import (
 )
 
 prior_factories = default_prior_factories(
-    foundation_window=best_s3_params["foundation_window"],
-    # Use the same callable pattern as the source notebook.
+    foundation_window=best_s3_params.get("prior__window", 6),
     chronos_predict_fn=chronos_predict_fn,
+    timesfm_predict_fn=timesfm_predict_fn,
 )
-# Include Chronos for the source-notebook comparison; use {"rolling", "ets"}
-# instead when you want a dependency-free robustness run.
-prior_factories = {k: v for k, v in prior_factories.items() if k in {"rolling", "ets", "chronos"}}
+# The default robustness cohort includes rolling, seasonal naive, ETS, Theta,
+# Prophet, Chronos, and TimesFM. Missing optional dependencies are reported as
+# explicit failures instead of silently changing the comparison cohort.
 
 prior_results = run_multi_prior_robustness(
     train_series,
@@ -336,7 +336,7 @@ prior_results = run_multi_prior_robustness(
 )
 ```
 
-Custom foundation models, including TimesFM, Moirai, and TimeGPT-like models, can be supplied through `CallableAutoregressivePrior` without coupling the project to a particular external API.
+Custom foundation models, including TimesFM, Moirai, and TimeGPT-like models, can be supplied through `CallableAutoregressivePrior` without coupling the project to a particular external API. Foundation priors use the causal `fit`/`fitted_values`/`predict`/`update` interface in S3 evaluation; the legacy `fit_predict` entry point remains only for backward compatibility.
 
 ## Reproducibility rules adopted by the project
 

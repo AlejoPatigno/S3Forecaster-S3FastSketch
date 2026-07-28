@@ -111,6 +111,8 @@ class CallableAutoregressivePrior:
         self.min_history = int(min_history)
         self.fallback = fallback
         self.name = name
+        self._history: pd.Series | None = None
+        self._fitted: pd.Series | None = None
 
     def _fallback(self, history: pd.Series) -> float:
         if len(history) == 0:
@@ -136,7 +138,7 @@ class CallableAutoregressivePrior:
             current.loc[make_future_index(current, 1)[0]] = value
         return np.asarray(predictions)
 
-    def fit_predict(self, series: Any, horizon: int):
+    def fit(self, series: Any):
         y = ensure_series(series)
         fitted = np.zeros(len(y), dtype=float)
         for t in range(len(y)):
@@ -148,11 +150,61 @@ class CallableAutoregressivePrior:
             )
         if len(y):
             fitted[0] = float(y.iloc[0])
-        future = self._predict_vector(y, horizon)
-        return (
-            pd.Series(fitted, index=y.index, name="fitted"),
-            pd.Series(future, index=make_future_index(y, horizon), name="forecast"),
+        self._history = y.copy()
+        self._fitted = pd.Series(fitted, index=y.index, name="fitted")
+        return self
+
+    def fitted_values(self) -> pd.Series:
+        if self._fitted is None:
+            raise RuntimeError("Prior must be fitted before fitted_values().")
+        return self._fitted.copy()
+
+    def predict(self, horizon: int) -> pd.Series:
+        if self._history is None:
+            raise RuntimeError("Prior must be fitted before predict().")
+        return pd.Series(
+            self._predict_vector(self._history, int(horizon)),
+            index=make_future_index(self._history, int(horizon)),
+            name="forecast",
         )
+
+    def predict_one(self) -> float:
+        return float(self.predict(1).iloc[0])
+
+    def update(self, timestamp_or_observation: Any, observed_value: float | None = None):
+        if self._history is None:
+            raise RuntimeError("Prior must be fitted before update().")
+        if observed_value is None:
+            timestamp = make_future_index(self._history, 1)[0]
+            value = float(timestamp_or_observation)
+        else:
+            timestamp = timestamp_or_observation
+            value = float(observed_value)
+        fitted_value = self.predict_one()
+        self._history.loc[timestamp] = value
+        self._fitted = pd.concat([self.fitted_values(), pd.Series([fitted_value], index=[timestamp])])
+        return self
+
+    def predict_from_history(self, series: Any, horizon: int) -> pd.Series:
+        history = ensure_series(series)
+        return pd.Series(
+            self._predict_vector(history, int(horizon)),
+            index=make_future_index(history, int(horizon)),
+            name="forecast",
+        )
+
+    def clone(self):
+        return copy.deepcopy(self)
+
+    def status(self) -> dict[str, Any]:
+        return {"prior_name": self.name, "fitted": self._history is not None}
+
+    def get_params(self) -> dict[str, Any]:
+        return {"prior_name": self.name, "min_history": self.min_history}
+
+    def fit_predict(self, series: Any, horizon: int):
+        self.fit(series)
+        return self.fitted_values(), self.predict(horizon)
 
 
 class ChronosPrior(CallableAutoregressivePrior):
@@ -217,7 +269,13 @@ def evaluate_prior_only(
     train = ensure_series(train_series)
     test = ensure_series(test_series)
     start = time.perf_counter()
-    _, forecast = prior.fit_predict(train, len(test))
+    if hasattr(prior, "predict_from_history"):
+        forecast = prior.predict_from_history(train, len(test))
+    elif hasattr(prior, "fit") and hasattr(prior, "predict"):
+        prior.fit(train)
+        forecast = prior.predict(len(test))
+    else:
+        _, forecast = prior.fit_predict(train, len(test))
     elapsed = time.perf_counter() - start
     out = parse_forecast_output(forecast)
     metrics = evaluate_forecast(
@@ -300,7 +358,7 @@ def evaluate_fastsketch_with_prior(
         "use_calendar", "ridge_alpha", "calibration_split_ratio", "shrinkage_max",
         "prior_name", "prior__window", "prior__seasonal_period", "prior__ets_trend",
         "prior__ets_damped", "prior__theta_period", "prior__chronos_model_id",
-        "prior__timesfm_model_id",
+        "prior__timesfm_model_id", "prior__timesfm_max_context",
     }
     point_params = dict(point_params)
     if "oob_split_ratio" in point_params and "calibration_split_ratio" not in point_params:
@@ -358,6 +416,56 @@ def run_multi_prior_robustness(
 ):
     """Evaluate fixed model hyperparameters under alternative foundation priors."""
 
+    if isinstance(train_series, dict) or isinstance(test_series, dict):
+        if not isinstance(train_series, dict) or not isinstance(test_series, dict):
+            raise TypeError("train_series and test_series must both be mappings for cohort evaluation.")
+        expected_ids = sorted(set(map(str, train_series)) | set(map(str, test_series)))
+        if set(map(str, train_series)) != set(map(str, test_series)):
+            raise ValueError("Train and test mappings must contain the same series cohort.")
+        detail_frames = []
+        all_forecasts, all_models = {}, {}
+        for series_id in expected_ids:
+            result = run_multi_prior_robustness(
+                train_series[series_id], test_series[series_id], prior_factories,
+                s3_params=s3_params, fastsketch_params=fastsketch_params,
+                s3_uq=s3_uq, fastsketch_uq=fastsketch_uq,
+                include_prior_only=include_prior_only, alpha=alpha,
+                seasonal_period=seasonal_period,
+            )
+            detail = result["summary"].copy()
+            detail["series_id"] = series_id
+            detail_frames.append(detail)
+            all_forecasts[series_id] = result["forecasts"]
+            all_models[series_id] = result["models"]
+        details = pd.concat(detail_frames, ignore_index=True)
+        failures = details.loc[details["status"] == "failed", ["series_id", "model", "prior", "error_type", "error"]].copy()
+        failures.columns = ["series_id", "architecture", "prior", "exception_type", "message"]
+        rows = []
+        metric_columns = [
+            column for column in details.select_dtypes(include=[np.number]).columns
+            if column not in {"n_expected", "n_success", "n_failed"}
+        ]
+        for (prior_name, model_name), group in details.groupby(["prior", "model"], sort=True):
+            successful = group[group["status"] == "ok"]
+            row = {
+                "prior": prior_name,
+                "model": model_name,
+                "n_expected": len(expected_ids),
+                "n_success": int(len(successful)),
+                "n_failed": int(len(group) - len(successful)),
+                "complete_cohort": len(successful) == len(expected_ids),
+            }
+            for column in metric_columns:
+                row[column] = pd.to_numeric(successful[column], errors="coerce").mean()
+            rows.append(row)
+        return {
+            "summary": pd.DataFrame(rows),
+            "details": details,
+            "failures": failures,
+            "forecasts": all_forecasts,
+            "models": all_models,
+        }
+
     rows, forecasts, models = [], {}, {}
     for prior_name, factory in prior_factories.items():
         forecasts[prior_name], models[prior_name] = {}, {}
@@ -402,6 +510,7 @@ def run_multi_prior_robustness(
                         "model": model_name,
                         "status": "ok",
                         "error": None,
+                        "error_type": None,
                         **output["metrics"],
                     }
                 )
@@ -414,13 +523,21 @@ def run_multi_prior_robustness(
                         "model": model_name,
                         "status": "failed",
                         "error": str(exc),
+                        "error_type": type(exc).__name__,
                     }
                 )
                 forecasts[prior_name][model_name] = None
                 models[prior_name][model_name] = None
 
     summary = pd.DataFrame(rows).sort_values(["prior", "model"]).reset_index(drop=True)
-    return {"summary": summary, "forecasts": forecasts, "models": models}
+    summary["n_expected"] = 1
+    summary["n_success"] = (summary["status"] == "ok").astype(int)
+    summary["n_failed"] = (summary["status"] != "ok").astype(int)
+    summary["complete_cohort"] = summary["n_success"] == summary["n_expected"]
+    failures = summary.loc[summary["status"] == "failed", ["model", "prior", "error_type", "error"]].copy()
+    failures.insert(0, "series_id", None)
+    failures.columns = ["series_id", "architecture", "prior", "exception_type", "message"]
+    return {"summary": summary, "failures": failures, "forecasts": forecasts, "models": models}
 
 
 def plot_multi_prior_transferability(
@@ -491,22 +608,38 @@ def plot_multi_prior_transferability(
 def default_prior_factories(
     *,
     foundation_window: int = 6,
-    include_chronos: bool = False,
+    include_chronos: bool = True,
+    include_timesfm: bool = True,
     chronos_predict_fn: Optional[Callable] = None,
     chronos_model_or_factory: Any = None,
     chronos_kwargs: Optional[dict[str, Any]] = None,
+    timesfm_predict_fn: Optional[Callable] = None,
+    timesfm_model_or_factory: Any = None,
+    timesfm_kwargs: Optional[dict[str, Any]] = None,
     external_predictors: Optional[dict[str, Callable]] = None,
 ):
+    from .priors import ETSPrior as CausalETSPrior
+    from .priors import RollingMeanPrior, SeasonalNaivePrior, ThetaPrior, TimesFMPrior
+
     factories = {
-        "rolling": lambda: RollingPrior(window_size=foundation_window),
-        "ets": lambda: ETSPrior(),
+        "causal_rolling_mean": lambda: RollingMeanPrior(window_size=foundation_window),
+        "seasonal_naive": lambda: SeasonalNaivePrior(),
+        "ets": lambda: CausalETSPrior(),
+        "theta": lambda: ThetaPrior(),
         "prophet": lambda: ProphetPrior(),
     }
-    if include_chronos or chronos_predict_fn is not None or chronos_model_or_factory is not None:
+    if include_chronos:
         kwargs = dict(chronos_kwargs or {})
         factories["chronos"] = lambda: ChronosPrior(
             predict_fn=chronos_predict_fn,
             model_or_factory=chronos_model_or_factory,
+            **kwargs,
+        )
+    if include_timesfm:
+        kwargs = dict(timesfm_kwargs or {})
+        factories["timesfm"] = lambda: TimesFMPrior(
+            predict_fn=timesfm_predict_fn,
+            model_or_factory=timesfm_model_or_factory,
             **kwargs,
         )
     for name, predictor in (external_predictors or {}).items():
