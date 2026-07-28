@@ -71,6 +71,8 @@ class NotebookRunConfig:
         "seasonal_naive",
         "ets",
         "theta",
+        "chronos",
+        "timesfm",
     )
 
 
