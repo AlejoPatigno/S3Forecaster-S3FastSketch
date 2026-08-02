@@ -150,3 +150,22 @@ def test_dlinear_factory_does_not_regress_to_nlinear():
     model = build_baseline(name, params)
     assert isinstance(model, TorchLinearBaseline)
     assert model.architecture == "DLinear"
+
+
+def test_default_linear_baselines_use_supported_window_parameter():
+    from s3paper.kaggle_workflow import default_baseline_parameters
+
+    parameters = default_baseline_parameters(seasonal_period=12)
+
+    assert parameters["NLinear"]["window_size"] == 12
+    assert parameters["DLinear"]["window_size"] == 12
+    assert "input_window" not in parameters["NLinear"]
+    assert "input_window" not in parameters["DLinear"]
+    assert isinstance(
+        build_baseline("NLinear", parameters["NLinear"]),
+        TorchLinearBaseline,
+    )
+    assert isinstance(
+        build_baseline("DLinear", parameters["DLinear"]),
+        TorchLinearBaseline,
+    )

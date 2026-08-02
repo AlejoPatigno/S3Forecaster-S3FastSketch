@@ -312,7 +312,7 @@ def split_development_evaluation(
 
     if len(ids) < 2:
         raise ValueError(
-            "Se necesitan al menos dos series para separar desarrollo y evaluación."
+            "Se necesitan al menos dos series para separar desarrollo y evaluaciÃ³n."
         )
 
     n_development = int(round(len(ids) * float(development_fraction)))
@@ -597,10 +597,10 @@ def default_baseline_parameters(
             "noise_level": 1e-2,
         },
         "NLinear": {
-            "input_window": min(12, seasonal_period),
+            "window_size": min(12, seasonal_period),
         },
         "DLinear": {
-            "input_window": min(12, seasonal_period),
+            "window_size": min(12, seasonal_period),
             "kernel_size": min(7, seasonal_period),
         },
     }

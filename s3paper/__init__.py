@@ -75,8 +75,12 @@ from .s3_forecaster import (
 )
 from .s3_fastsketch import FastRollingFoundation, S3FastSketchForecaster
 from .chronos import ChronosZeroShotModel, chronos_predict_fixed_horizon
+from .kaggle_loaders import DatasetBundle, load_dataset, load_series_prioritarias
 
 __all__ = [
+    "DatasetBundle",
+    "load_dataset",
+    "load_series_prioritarias",
     "S3Forecaster",
     "S3ForecasterV6",
     "S3FastSketchForecaster",

@@ -1,0 +1,23 @@
+\begin{table*}[t]
+\centering
+\caption{Phase-1 benchmark summary based on median MAPE. Only completed model--dataset evaluations are ranked.}
+\label{tab:phase1_benchmark}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrrrlrlr}
+\toprule
+& \multicolumn{2}{c}{S3-FastSketch} & \multicolumn{2}{c}{S3-Forecaster}
+& \multicolumn{2}{c}{Overall best} & \multicolumn{2}{c}{Best non-S3} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}
+Dataset & Rank & MAPE (\%) & Rank & MAPE (\%) & Model & MAPE (\%) & Model & MAPE (\%) \\
+\midrule
+CIF & 1 & 5.00 & 2 & 5.13 & S3-FastSketch & 5.00 & ETS & 5.19 \\
+M3 & 11 & 8.80 & 6 & 7.04 & ETS & 5.44 & ETS & 5.44 \\
+M4 & 7 & 3.97 & 8 & 4.05 & GPR & 2.97 & GPR & 2.97 \\
+Tourism & 1 & 16.64 & 4 & 18.09 & S3-FastSketch & 16.64 & ETS & 17.32 \\
+\bottomrule
+\end{tabular}
+\begin{minipage}{0.98\textwidth}
+\footnotesize\emph{Note:} Ranks are conditional on the available phase-1 results and must not be interpreted as final rankings until the missing model--dataset runs are completed.
+\end{minipage}
+\end{table*}
