@@ -1,0 +1,5 @@
+- Two gradient-free residual adapters address engineering series below 200 points.
+- A fixed reservoir and deterministic sketch provide complementary model variants.
+- Out-of-bag gating and bounded shrinkage limit unsupported residual corrections.
+- Adaptive conformal inference supplies sequential uncertainty intervals.
+- The proposed variants lead point accuracy on ICMD, CIF, Tourism, and M4.

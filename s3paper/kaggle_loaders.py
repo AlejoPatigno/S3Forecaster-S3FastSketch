@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -1759,12 +1760,308 @@ def load_icmd_monthly(
             }
         )
 
+def load_cif_2016(
+    root: str | Path,
+    *,
+    minimum_train_length: int = 24,
+    maximum_train_length: int | None = 199,
+    maximum_series: int | None = None,
+    selected_series: Sequence[str] | None = None,
+    default_horizon: int = 6,
+) -> DatasetBundle:
+    table_path = _find_file(
+        root,
+        (
+            "*cif*.xlsx",
+            "*cif*.csv",
+            "*.xlsx",
+            "*.csv",
+        ),
+        required=True,
+    )
+
+    return _bundle_from_generic_table(
+        table_path,
+        dataset_name="CIF 2016",
+        minimum_train_length=minimum_train_length,
+        maximum_train_length=maximum_train_length,
+        maximum_series=maximum_series,
+        selected_series=selected_series,
+        default_horizon=default_horizon,
+    )
+
+
+# ============================================================
+# Loader ICMD / CASAGRES
+# ============================================================
+
+def _parse_month_column(values: pd.Series) -> pd.Series:
+    text = values.astype(str).str.strip()
+
+    yyyymm = text.str.fullmatch(r"\d{6}")
+
+    parsed = pd.to_datetime(text, errors="coerce")
+
+    if yyyymm.any():
+        parsed.loc[yyyymm] = pd.to_datetime(
+            text.loc[yyyymm],
+            format="%Y%m",
+            errors="coerce",
+        )
+
+    return parsed.dt.to_period("M").dt.to_timestamp("M")
+
+
+def load_icmd_monthly(
+    dataset_path: str | Path,
+    *,
+    date_column: str | None = None,
+    target_column: str | None = None,
+    series_id_column: str | None = None,
+    selected_series: Sequence[str] | None = None,
+    test_horizon: int = 10,
+    minimum_train_length: int = 24,
+    maximum_train_length: int | None = 199,
+    maximum_series: int | None = None,
+    positive_sales_only: bool = True,
+    fill_missing_months: float | None = 0.0,
+    sheet_name: str | int = 0,
+) -> DatasetBundle:
+    path = Path(dataset_path)
+
+    if path.is_dir():
+        path = _find_file(
+            path,
+            (
+                "*factura*.parquet",
+                "*factura*.xlsx",
+                "*factura*.xls",
+                "*factura*.csv",
+                "*casagres*.xlsx",
+                "*icmd*.xlsx",
+                "*.parquet",
+                "*.xlsx",
+                "*.xls",
+                "*.csv",
+            ),
+        )
+
+    frame = _read_table(path, sheet_name=sheet_name)
+
+    date_column = date_column or _column_by_candidates(
+        frame,
+        (
+            "Periodo",
+            "Fecha",
+            "Date",
+            "Mes",
+            "AñoMes",
+            "YearMonth",
+        ),
+        required=True,
+    )
+    target_column = target_column or _column_by_candidates(
+        frame,
+        (
+            "Valor Venta",
+            "ValorVenta",
+            "valor_venta",
+            "SalesValue",
+            "Valor Neto",
+            "Venta Neta",
+        ),
+        required=True,
+    )
+    series_id_column = series_id_column or _column_by_candidates(
+        frame,
+        (
+            "Material",
+            "Referencia",
+            "Producto",
+            "Codigo Material",
+            "Código Material",
+            "Product",
+            "ProductID",
+        ),
+        required=False,
+    )
+
+    working = frame.copy()
+    working["_month"] = _parse_month_column(working[date_column])
+    working["_target"] = _parse_locale_number(working[target_column])
+    working = working.dropna(subset=["_month", "_target"])
+
+    if positive_sales_only:
+        working = working[working["_target"] > 0.0]
+
+    if series_id_column is None:
+        working["_series_id"] = "ICMD"
+        series_id_column = "_series_id"
+    else:
+        working[series_id_column] = working[series_id_column].astype(str)
+
+    if selected_series is not None:
+        allowed = {str(value) for value in selected_series}
+        working = working[working[series_id_column].isin(allowed)]
+
+    monthly = (
+        working.groupby([series_id_column, "_month"], as_index=False)["_target"]
+        .sum()
+        .sort_values([series_id_column, "_month"])
+    )
+
+    train_map: dict[str, pd.Series] = {}
+    test_map: dict[str, pd.Series] = {}
+    metadata_rows: list[dict[str, Any]] = []
+
+    for series_id, group in monthly.groupby(series_id_column):
+        group = group.sort_values("_month")
+
+        start = pd.Period(group["_month"].min(), freq="M")
+        end = pd.Period(group["_month"].max(), freq="M")
+        complete_index = pd.period_range(start=start, end=end, freq="M").to_timestamp("M")
+
+        series = pd.Series(
+            group["_target"].to_numpy(dtype=float),
+            index=pd.DatetimeIndex(group["_month"]),
+            name=str(series_id),
+        )
+        series = series.groupby(level=0).sum().reindex(complete_index)
+
+        if fill_missing_months is None and series.isna().any():
+            raise ValueError(
+                f"ICMD/{series_id} contiene meses faltantes. "
+                "Defina fill_missing_months explícitamente."
+            )
+
+        if fill_missing_months is not None:
+            series = series.fillna(float(fill_missing_months))
+
+        if len(series) <= int(test_horizon):
+            continue
+
+        train_map[str(series_id)] = series.iloc[:-int(test_horizon)].copy()
+        test_map[str(series_id)] = series.iloc[-int(test_horizon):].copy()
+
+        metadata_rows.append(
+            {
+                "dataset": "ICMD",
+                "series_id": str(series_id),
+                "n_transactions": int(
+                    (working[series_id_column] == str(series_id)).sum()
+                ),
+                "n_months": len(series),
+                "forecast_horizon": int(test_horizon),
+                "start_timestamp": series.index.min(),
+                "end_timestamp": series.index.max(),
+            }
+        )
+
     bundle = DatasetBundle(
         name="ICMD",
         train_series_map=train_map,
         test_series_map=test_map,
         metadata=pd.DataFrame(metadata_rows),
         seasonal_period=12,
+    )
+
+    return _validate_bundle(
+        bundle,
+        minimum_train_length=minimum_train_length,
+        maximum_train_length=maximum_train_length,
+        maximum_series=maximum_series,
+        selected_series=selected_series,
+    )
+
+
+# ============================================================
+# Loader Series Prioritarias (JSON)
+# ============================================================
+
+def load_series_prioritarias(
+    dataset_path: str | Path = "series_prioritarias.json",
+    *,
+    dataset_name: str = "Series_Prioritarias",
+    test_horizon: int = 6,
+    minimum_train_length: int = 12,
+    maximum_train_length: int | None = 199,
+    maximum_series: int | None = None,
+    selected_series: Sequence[str] | None = None,
+    seasonal_period: int = 12,
+) -> DatasetBundle:
+    """
+    Loads time series from a JSON file (format {series_id: {"index": [...], "values": [...]}})
+    and returns a standardized DatasetBundle.
+    """
+    path = Path(dataset_path)
+
+    if path.is_dir():
+        path = _find_file(
+            path,
+            (
+                "series_prioritarias.json",
+                "*series*.json",
+                "*.json",
+            ),
+        )
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    train_map: dict[str, pd.Series] = {}
+    test_map: dict[str, pd.Series] = {}
+    metadata_rows: list[dict[str, Any]] = []
+
+    selected_set = (
+        {str(s) for s in selected_series} if selected_series is not None else None
+    )
+
+    for series_id, payload in data.items():
+        series_id_str = str(series_id)
+
+        if selected_set is not None and series_id_str not in selected_set:
+            continue
+
+        raw_index = payload.get("index", [])
+        raw_values = payload.get("values", [])
+
+        if not raw_index or not raw_values:
+            continue
+
+        index = pd.to_datetime(raw_index)
+        values = np.asarray(raw_values, dtype=float)
+
+        series = pd.Series(values, index=index, name=series_id_str).sort_index()
+
+        if len(series) <= int(test_horizon):
+            continue
+
+        train = series.iloc[:-int(test_horizon)].copy()
+        test = series.iloc[-int(test_horizon):].copy()
+
+        train_map[series_id_str] = train
+        test_map[series_id_str] = test
+
+        metadata_rows.append(
+            {
+                "dataset": dataset_name,
+                "series_id": series_id_str,
+                "n_total": len(series),
+                "n_train": len(train),
+                "n_test": len(test),
+                "forecast_horizon": int(test_horizon),
+                "start_timestamp": series.index.min(),
+                "end_timestamp": series.index.max(),
+                "seasonal_period": seasonal_period,
+            }
+        )
+
+    bundle = DatasetBundle(
+        name=dataset_name,
+        train_series_map=train_map,
+        test_series_map=test_map,
+        metadata=pd.DataFrame(metadata_rows),
+        seasonal_period=seasonal_period,
     )
 
     return _validate_bundle(
@@ -1798,6 +2095,10 @@ def load_dataset(
         "cif2016": load_cif_2016,
         "icmd": load_icmd_monthly,
         "casagres": load_icmd_monthly,
+        "seriesprioritarias": load_series_prioritarias,
+        "series_prioritarias": load_series_prioritarias,
+        "prioritarias": load_series_prioritarias,
+        "json": load_series_prioritarias,
     }
 
     if key not in loaders:

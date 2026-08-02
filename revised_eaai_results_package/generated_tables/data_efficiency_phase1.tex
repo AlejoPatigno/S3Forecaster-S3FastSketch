@@ -1,0 +1,24 @@
+\begin{table}[t]
+\centering
+\caption{Median MAPE (\%) as a function of the available training history.}
+\label{tab:data_efficiency_phase1}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llrrrr}
+\toprule
+Dataset & Model & 25\% ($n$) & 50\% ($n$) & 75\% ($n$) & 100\% ($n$) \\
+\midrule
+CIF & S3-FastSketch & 5.98 (47) & 5.55 (61) & 4.89 (65) & 5.00 (65) \\
+CIF & S3-Forecaster & -- & 4.97 (53) & 5.13 (61) & 5.13 (65) \\
+M3 & S3-FastSketch & 7.64 (149) & 9.68 (199) & 9.14 (199) & 8.80 (199) \\
+M3 & S3-Forecaster & 6.11 (143) & 5.18 (155) & 7.02 (199) & 7.04 (199) \\
+M4 & S3-FastSketch & 3.44 (153) & 5.29 (199) & 4.36 (199) & 3.97 (199) \\
+M4 & S3-Forecaster & 2.87 (145) & 4.31 (199) & 3.94 (199) & 4.05 (199) \\
+Tourism & S3-FastSketch & -- & -- & -- & 16.64 (199) \\
+Tourism & S3-Forecaster & -- & -- & -- & 18.09 (199) \\
+\bottomrule
+\end{tabular}
+\begin{minipage}{0.96\linewidth}
+\footnotesize\emph{Note:} Each cell reports median MAPE followed by the number of successfully evaluated series in parentheses. Cohort size changes across fractions and, in some cases, across models; the trajectories are therefore descriptive rather than fixed-cohort learning curves. ``--'' denotes an unavailable run.
+\end{minipage}
+\end{table}

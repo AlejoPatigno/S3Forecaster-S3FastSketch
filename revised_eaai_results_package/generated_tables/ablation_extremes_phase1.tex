@@ -1,0 +1,24 @@
+\begin{table*}[t]
+\centering
+\caption{Largest favorable and adverse paired median MAPE changes in the phase-1 ablation export.}
+\label{tab:ablation_extremes_phase1}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lllrlr}
+\toprule
+Dataset & Model & Most favorable removal & Change (\%) & Most adverse removal & Change (\%) \\
+\midrule
+CIF & S3-FastSketch & No EMA residual & -0.6 & No shrinkage & 24.5 \\
+CIF & S3-Forecaster & Prior only & -3.3 & No AR lags & 7.6 \\
+M3 & S3-FastSketch & No multiscale sketch & -15.3 & Prior only & 12.1 \\
+M3 & S3-Forecaster & No AR lags & -1.2 & Prior only & 10.5 \\
+M4 & S3-FastSketch & No causal convolution & -2.5 & Prior only & 44.1 \\
+M4 & S3-Forecaster & No volatility gate & -1.7 & Prior only & 41.3 \\
+Tourism & S3-FastSketch & No volatility features & -0.6 & No shrinkage & 16.6 \\
+Tourism & S3-Forecaster & No AR lags & -6.1 & No volatility gate & 1.8 \\
+\bottomrule
+\end{tabular}
+\begin{minipage}{0.98\textwidth}
+\footnotesize\emph{Note:} Changes compare each variant's aggregated median MAPE with the corresponding full-model median. Negative values favor the ablated variant; positive values favor the full model. This descriptive summary does not establish statistical significance.
+\end{minipage}
+\end{table*}

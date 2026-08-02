@@ -15,6 +15,53 @@ from .temporal_cv import make_expanding_window_folds, aggregate_scores
 from .utils import count_trainable_parameters, ensure_series
 
 
+def _normalize_holdout_collection(train_series: Any, calibration_series: Any):
+    """Return aligned, validated holdout splits for one or many series."""
+
+    from collections.abc import Mapping
+
+    train_is_mapping = isinstance(train_series, Mapping)
+    calibration_is_mapping = isinstance(calibration_series, Mapping)
+    if train_is_mapping != calibration_is_mapping:
+        raise TypeError(
+            "train_series and calibration_series must both be mappings "
+            "or both be individual series."
+        )
+
+    if not train_is_mapping:
+        return [
+            (
+                "development",
+                ensure_series(train_series, name="train"),
+                ensure_series(calibration_series, name="calibration"),
+            )
+        ]
+
+    train_ids = {str(series_id) for series_id in train_series}
+    calibration_ids = {str(series_id) for series_id in calibration_series}
+    if train_ids != calibration_ids:
+        raise ValueError(
+            "train_series and calibration_series must contain the same series IDs."
+        )
+    if not train_ids:
+        raise ValueError("At least one HPO series is required.")
+
+    normalized_train = {str(key): value for key, value in train_series.items()}
+    normalized_calibration = {
+        str(key): value for key, value in calibration_series.items()
+    }
+    return [
+        (
+            series_id,
+            ensure_series(normalized_train[series_id], name=f"{series_id}_train"),
+            ensure_series(
+                normalized_calibration[series_id],
+                name=f"{series_id}_calibration",
+            ),
+        )
+        for series_id in sorted(train_ids)
+    ]
+
 POINT_KEYS = {
     "foundation_window",
     "prior_name",
@@ -204,18 +251,18 @@ def optimize_fastsketch_holdout(
     objective_metric: str = "mape",
     prior_names: tuple[str, ...] | list[str] | None = None,
 ):
-    """Optimize S3-FastSketch point hyperparameters on one holdout split."""
+    """Optimize point hyperparameters on one or many aligned holdout splits."""
 
     import optuna
 
     effective_prior_names = validate_prior_names(prior_names)
-    train = ensure_series(train_series, name="train")
-    calibration = ensure_series(calibration_series, name="calibration")
+    holdouts = _normalize_holdout_collection(train_series, calibration_series)
+    minimum_train_length = min(len(train) for _, train, _ in holdouts)
 
     def objective(trial: optuna.Trial) -> float:
         params = suggest_fastsketch_point_params(
             trial,
-            train_length=len(train),
+            train_length=minimum_train_length,
             seasonal_period=seasonal_period,
             prior_names=effective_prior_names,
         )
@@ -223,23 +270,31 @@ def optimize_fastsketch_holdout(
             model_params, prior_name, prior_params = split_model_prior_params(params)
             trial.set_user_attr("prior_name", prior_name)
             trial.set_user_attr("prior_params", prior_params)
-            model = S3FastSketchForecaster(
-                horizon=1,
-                seasonal_period=seasonal_period,
-                aci_target=0.10,
-                aci_step_size=0.05,
-                min_train_samples=6,
-                min_calib_samples=2,
-                **_normalize_point_params(model_params),
-            )
-            result = evaluate_rolling_model(
-                model,
-                train,
-                calibration,
-                seasonal_period=seasonal_period,
-            )
-            score = float(result["metrics"][objective_metric])
-            return score if np.isfinite(score) else float("inf")
+            normalized_params = _normalize_point_params(model_params)
+            series_scores = {}
+            for series_id, train, calibration in holdouts:
+                model = S3FastSketchForecaster(
+                    horizon=1,
+                    seasonal_period=seasonal_period,
+                    aci_target=0.10,
+                    aci_step_size=0.05,
+                    min_train_samples=6,
+                    min_calib_samples=2,
+                    **normalized_params,
+                )
+                result = evaluate_rolling_model(
+                    model,
+                    train,
+                    calibration,
+                    seasonal_period=seasonal_period,
+                )
+                score = float(result["metrics"][objective_metric])
+                if not np.isfinite(score):
+                    return float("inf")
+                series_scores[series_id] = score
+
+            trial.set_user_attr("series_scores", series_scores)
+            return float(np.median(list(series_scores.values())))
         except Exception as exc:
             trial.set_user_attr("error", str(exc))
             return float("inf")
@@ -247,10 +302,18 @@ def optimize_fastsketch_holdout(
     study = optuna.create_study(
         direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed)
     )
+    hpo_series_ids = [series_id for series_id, _, _ in holdouts]
     study.set_user_attr("prior_names", list(effective_prior_names))
+    study.set_user_attr("hpo_series_ids", hpo_series_ids)
+    study.set_user_attr("n_hpo_series", len(hpo_series_ids))
+    study.set_user_attr("aggregation", "median")
+    study.set_user_attr("objective_metric", objective_metric)
     study.optimize(objective, n_trials=int(n_trials), show_progress_bar=False)
     study.set_user_attr("cross_validation", False)
-    study.set_user_attr("holdout_protocol", "train_calibration")
+    study.set_user_attr(
+        "holdout_protocol",
+        "multi_series_train_calibration" if len(holdouts) > 1 else "train_calibration",
+    )
     return study
 
 
@@ -357,16 +420,17 @@ def optimize_fastsketch_uq_holdout(
     penalty_strength: float = 100.0,
     seed: int = 42,
 ):
-    """Optimize S3-FastSketch UQ parameters with point parameters frozen."""
+    """Optimize uncertainty parameters across one or many holdout splits."""
 
     import optuna
 
-    train = ensure_series(train_series, name="train")
-    calibration = ensure_series(calibration_series, name="calibration")
-    point_params = _normalize_point_params(
+    holdouts = _normalize_holdout_collection(train_series, calibration_series)
+    normalized_point_params = _normalize_point_params(
         {key: value for key, value in point_params.items() if key in POINT_KEYS}
     )
-    point_params, _, _ = split_model_prior_params(point_params)
+    normalized_point_params, _, _ = split_model_prior_params(
+        normalized_point_params
+    )
     fixed_alpha = 1.0 - float(target_coverage)
 
     def objective(trial: optuna.Trial) -> float:
@@ -374,34 +438,44 @@ def optimize_fastsketch_uq_holdout(
         interval_scale = trial.suggest_float("interval_scale", 0.5, 8.0, log=True)
         min_width_factor = trial.suggest_float("min_width_factor", 0.0, 2.0)
         try:
-            minimum_width = min_width_factor * seasonal_naive_scale(
-                train,
-                seasonal_period=seasonal_period,
-            )
             trial.set_user_attr("requested_nominal_coverage", target_coverage)
             trial.set_user_attr("effective_target_coverage", target_coverage)
-            model = S3FastSketchForecaster(
-                horizon=1,
-                seasonal_period=seasonal_period,
-                aci_target=fixed_alpha,
-                aci_step_size=aci_step_size,
-                interval_scale=interval_scale,
-                minimum_width=minimum_width,
-                min_train_samples=6,
-                min_calib_samples=2,
-                **point_params,
-            )
-            result = evaluate_rolling_model(
-                model,
-                train,
-                calibration,
-                alpha=fixed_alpha,
-                seasonal_period=seasonal_period,
-            )
-            metrics = result["metrics"]
-            penalty = penalty_strength * max(0.0, target_coverage - metrics["ecp"]) ** 2
-            score = float(metrics["msis"] + penalty)
-            return score if np.isfinite(score) else float("inf")
+            series_scores = {}
+            for series_id, train, calibration in holdouts:
+                minimum_width = min_width_factor * seasonal_naive_scale(
+                    train,
+                    seasonal_period=seasonal_period,
+                )
+                model = S3FastSketchForecaster(
+                    horizon=1,
+                    seasonal_period=seasonal_period,
+                    aci_target=fixed_alpha,
+                    aci_step_size=aci_step_size,
+                    interval_scale=interval_scale,
+                    minimum_width=minimum_width,
+                    min_train_samples=6,
+                    min_calib_samples=2,
+                    **normalized_point_params,
+                )
+                result = evaluate_rolling_model(
+                    model,
+                    train,
+                    calibration,
+                    alpha=fixed_alpha,
+                    seasonal_period=seasonal_period,
+                )
+                metrics = result["metrics"]
+                penalty = (
+                    penalty_strength
+                    * max(0.0, target_coverage - metrics["ecp"]) ** 2
+                )
+                score = float(metrics["msis"] + penalty)
+                if not np.isfinite(score):
+                    return float("inf")
+                series_scores[series_id] = score
+
+            trial.set_user_attr("series_scores", series_scores)
+            return float(np.median(list(series_scores.values())))
         except Exception as exc:
             trial.set_user_attr("error", str(exc))
             return float("inf")
@@ -409,6 +483,11 @@ def optimize_fastsketch_uq_holdout(
     study = optuna.create_study(
         direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed)
     )
+    hpo_series_ids = [series_id for series_id, _, _ in holdouts]
+    study.set_user_attr("hpo_series_ids", hpo_series_ids)
+    study.set_user_attr("n_hpo_series", len(hpo_series_ids))
+    study.set_user_attr("aggregation", "median")
+    study.set_user_attr("objective_metric", "msis_plus_coverage_penalty")
     study.optimize(objective, n_trials=int(n_trials), show_progress_bar=False)
     study.set_user_attr("cross_validation", False)
     study.set_user_attr("point_params_frozen", True)

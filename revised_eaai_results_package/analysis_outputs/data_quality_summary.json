@@ -1,0 +1,99 @@
+{
+  "row_counts": {
+    "benchmark": 52,
+    "efficiency": 25,
+    "shock": 104,
+    "ablation": 80
+  },
+  "duplicate_keys": {
+    "benchmark": 0,
+    "efficiency": 0,
+    "shock": 0,
+    "ablation": 0
+  },
+  "rank_mismatches": [],
+  "missing_benchmark_models": {
+    "CIF": [],
+    "M3": [],
+    "M4": [
+      "CNN",
+      "Chronos-Bolt-Small",
+      "EasyTSF-DLinear",
+      "EasyTSF-NLinear",
+      "LSTM",
+      "TimesFM-2.5-200M"
+    ],
+    "Tourism": [
+      "CNN",
+      "Chronos-Bolt-Small",
+      "EasyTSF-DLinear",
+      "EasyTSF-NLinear",
+      "LSTM",
+      "TimesFM-2.5-200M"
+    ]
+  },
+  "missing_efficiency_cells": [
+    {
+      "dataset": "CIF",
+      "model": "S3Forecaster",
+      "history_fraction": 0.25
+    },
+    {
+      "dataset": "Tourism",
+      "model": "S3FastSketchForecaster",
+      "history_fraction": 0.25
+    },
+    {
+      "dataset": "Tourism",
+      "model": "S3FastSketchForecaster",
+      "history_fraction": 0.5
+    },
+    {
+      "dataset": "Tourism",
+      "model": "S3FastSketchForecaster",
+      "history_fraction": 0.75
+    },
+    {
+      "dataset": "Tourism",
+      "model": "S3Forecaster",
+      "history_fraction": 0.25
+    },
+    {
+      "dataset": "Tourism",
+      "model": "S3Forecaster",
+      "history_fraction": 0.5
+    },
+    {
+      "dataset": "Tourism",
+      "model": "S3Forecaster",
+      "history_fraction": 0.75
+    }
+  ],
+  "incomplete_shock_pairs": [],
+  "ablation_null_relative_deltas": 21,
+  "efficiency_max_mean_to_median_mape_ratio": 64519.41339002387,
+  "datasets": [
+    "CIF",
+    "M3",
+    "M4",
+    "Tourism"
+  ],
+  "benchmark_models": [
+    "AR",
+    "ARIMA",
+    "CNN",
+    "Chronos-Bolt-Small",
+    "ETS",
+    "EasyTSF-DLinear",
+    "EasyTSF-NLinear",
+    "GPR",
+    "KRR",
+    "LSTM",
+    "Naive",
+    "S3FastSketchForecaster",
+    "S3Forecaster",
+    "SeasonalNaive",
+    "Theta",
+    "TimesFM-2.5-200M"
+  ]
+}

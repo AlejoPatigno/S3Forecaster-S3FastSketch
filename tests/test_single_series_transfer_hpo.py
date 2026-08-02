@@ -98,3 +98,73 @@ def test_transfer_protocol_calls_hpo_once_and_excludes_development(monkeypatch):
     assert result["metadata"]["cross_validation"] is False
     assert result["metadata"]["one_hpo_series_per_dataset"] is True
     assert result["metadata"]["hpo_repeated_per_series"] is False
+
+
+def test_group_hpo_uses_requested_series_and_excludes_them(monkeypatch):
+    calls = {"point_ids": None, "uq_ids": None}
+    point_params = {
+        "ar_lags": 2,
+        "prior_name": "causal_rolling_mean",
+        "prior__window": 2,
+    }
+    uq_params = {
+        "aci_step_size": 0.05,
+        "interval_scale": 1.0,
+        "min_width_factor": 0.1,
+    }
+
+    def fake_point(train_map, calibration_map, **kwargs):
+        calls["point_ids"] = sorted(train_map)
+        assert sorted(train_map) == sorted(calibration_map)
+        assert kwargs["objective_metric"] == "smape_percent"
+        return FakeStudy(point_params)
+
+    def fake_uq(train_map, calibration_map, frozen_point_params, **kwargs):
+        calls["uq_ids"] = sorted(train_map)
+        assert sorted(train_map) == sorted(calibration_map)
+        assert frozen_point_params == point_params
+        return FakeStudy(uq_params)
+
+    def fake_eval(train, test, frozen_point_params, *, uq_params=None, **kwargs):
+        forecast = pd.DataFrame(
+            {
+                "pred": test.to_numpy(dtype=float),
+                "lower": test.to_numpy(dtype=float) - 1.0,
+                "upper": test.to_numpy(dtype=float) + 1.0,
+            },
+            index=test.index,
+        )
+        return {
+            "forecast": forecast,
+            "metrics": {
+                "smape_percent": 0.0,
+                "mase": 0.0,
+                "msis": 1.0,
+                "ecp": 1.0,
+            },
+        }
+
+    monkeypatch.setattr(
+        hpo,
+        "_model_functions",
+        lambda model_name: (fake_point, fake_uq, fake_eval),
+    )
+
+    series_map = synthetic_series_map()
+    result = hpo.run_group_hpo_transfer_experiment(
+        series_map,
+        model_name="S3Forecaster",
+        dataset_name="synthetic",
+        hpo_series_ids=["S1", "S2"],
+        n_point_trials=2,
+        n_uq_trials=2,
+        seed=42,
+        git_commit="test",
+    )
+
+    assert calls == {"point_ids": ["S1", "S2"], "uq_ids": ["S1", "S2"]}
+    assert result["development_series_ids"] == ["S1", "S2"]
+    assert result["evaluation_results"]["aggregate_series_ids"] == ["S3"]
+    assert result["metadata"]["n_hpo_series"] == 2
+    assert result["metadata"]["hpo_aggregation"] == "median"
+    assert result["metadata"]["point_objective_metric"] == "smape_percent"

@@ -1,0 +1,2024 @@
+
+\documentclass[review,number,sort&compress]{elsarticle}
+\usepackage[margin=1in]{geometry}
+
+% Core packages
+\usepackage{graphicx} % Required for inserting images
+\usepackage{amsmath,amssymb}
+\usepackage{bm}
+\usepackage[numbers]{natbib}
+\usepackage{url}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{threeparttable}
+\usepackage[final]{microtype}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{placeins}
+\usepackage{microtype}
+\bibliographystyle{elsarticle-num}
+
+\setlength{\emergencystretch}{2em}
+
+\begin{document}
+
+\begin{frontmatter}
+
+\title{Small-Data Surrogate Shock-Aware Designed (S3) models: Gradient-Free Residual Adaptation with Adaptive Conformal Uncertainty for Engineering Time Series}
+\author{A.patino}
+
+\begin{abstract}
+F
+\end{abstract}
+
+\begin{keyword}
+small-data forecasting \sep residual adaptation \sep reservoir computing \sep conformal prediction \sep non-stationarity \sep industrial forecasting
+\end{keyword}
+
+\end{frontmatter}
+
+\section{Introduction}
+
+
+
+
+\subsection{Key Contributions}
+
+\begin{enumerate}
+    \item We formulate small-data engineering forecasting as a \emph{surrogate residual adaptation} problem and propose a gradient-free correction architecture that freezes the baseline forecaster and learns only a low-capacity residual readout, thereby prioritizing variance control and convex optimization stability over end-to-end parameter proliferation \cite{zeng2023dlinear,gao2023sedan}.
+    \item We introduce two complementary model realizations---\emph{S3-Forecaster}, based on fixed-reservoir Echo State dynamics under spectral radius constraints, and \emph{S3-FastSketch}, based on deterministic causal multiscale sketches---to separate temporal representation from lightweight residual decoding in genuinely short-series regimes \cite{jaeger2004science,armenio2019esn,maass2002reservoir}.
+    \item We develop a shock-aware residual control mechanism based on out-of-bag gating and bounded shrinkage, motivated by the documented adaptation lag of classical online updaters under concept drift and by the need to suppress variance amplification when apparent residual structure is not stable enough to be learnable \cite{zhang2023onenet,zhang2024d3a}.
+    \item We integrate a sequential Adaptive Conformal Inference layer for uncertainty quantification, so that prediction intervals are calibrated by recent nonconformity scores and retain distribution-free predictive validity despite exchangeability violation in dependent engineering sequences \cite{gibbs2021aci,xu2023spci,angelopoulos2023conformal}.
+    \item We adopt a strict chronological train--calibration--test protocol designed to preserve temporal order and avoid information leakage and look-ahead bias, aligning evaluation with the actual decision task faced in forecast deployment rather than with i.i.d.\ cross-validation surrogates \cite{cerqueira2020evaluation,burkner2020lfo}.
+\end{enumerate}
+
+
+
+
+
+% =============================================================================
+% REQUIRED PACKAGES
+% =============================================================================
+% \usepackage{amsmath,amssymb,amsfonts,bm}
+% \usepackage{booktabs,multirow,tabularx,array}
+% \usepackage{threeparttable}
+% \usepackage{siunitx}
+% \usepackage{hyperref}
+%
+% The formulation below assumes that the final experimental implementation is
+% aligned with the manuscript in three respects:
+% (i) the contractive ESN configuration enforces rho(W_res)<1;
+% (ii) the canonical S3 readout uses Bayesian Ridge, or is described more
+%      generally as a convex regularized readout when Lasso/Elastic Net are used;
+% (iii) the canonical FastSketch coefficient follows the projected closed-form
+%       estimator in Eq.~\eqref{eq:fast_gamma_projected}.
+%
+% Manuscript basis: :contentReference[oaicite:0]{index=0}
+% Public dataset descriptions were cross-checked against the corresponding
+% competition records. :contentReference[oaicite:1]{index=1}
+% =============================================================================
+
+\providecommand{\R}{\mathbb{R}}
+\providecommand{\E}{\mathbb{E}}
+\providecommand{\Prob}{\mathbb{P}}
+\providecommand{\Ind}{\mathbb{I}}
+\providecommand{\Fcal}{\mathcal{F}}
+\providecommand{\Dtrain}{\mathcal{D}_{\mathrm{tr}}}
+\providecommand{\Dcal}{\mathcal{D}_{\mathrm{cal}}}
+\providecommand{\Dtest}{\mathcal{D}_{\mathrm{te}}}
+\providecommand{\Scal}{\mathcal{S}}
+\providecommand{\Gcal}{\mathcal{G}}
+\providecommand{\eps}{\varepsilon}
+\providecommand{\ybase}{\widehat{y}^{\,\mathrm{base}}}
+\providecommand{\rhat}{\widehat{r}}
+\providecommand{\yhat}{\widehat{y}}
+\providecommand{\MAPEe}{\mathrm{MAPE}_{\eps}}
+\providecommand{\MSIS}{\mathrm{MSIS}}
+\providecommand{\ECP}{\mathrm{ECP}}
+
+
+\section{Materials and Methods}
+\label{sec:methods}
+
+\subsection{Problem Formulation}
+\label{subsec:problem_formulation}
+
+Let
+\begin{equation}
+    \bm{y}_{1:N}
+    =
+    \left(y_1,\ldots,y_N\right)^\top
+    \in \R^N
+\end{equation}
+denote a univariate engineering time series with monthly sampling frequency and
+limited historical availability, $N<200$. The forecasting problem is defined
+with respect to the natural filtration
+\begin{equation}
+    \Fcal_t
+    =
+    \sigma(y_1,\ldots,y_t),
+\end{equation}
+which represents all target information observed up to time $t$. A valid
+one-step-ahead predictor must satisfy
+\begin{equation}
+    \yhat_{t|t-1}
+    \in
+    \Fcal_{t-1},
+\end{equation}
+such that $y_t$ cannot influence its own forecast.
+The proposed family follows a residual-adaptation decomposition:
+\begin{equation}
+    \yhat_{t|t-1}
+    =
+    \ybase_{t|t-1}
+    +
+    \widehat{\Delta}_{t|t-1},
+    \label{eq:general_decomposition}
+\end{equation}
+where $\ybase_{t|t-1}$ is generated by a frozen causal prior and
+$\widehat{\Delta}_{t|t-1}$ is a data-efficient residual correction. The causal
+base residual is
+\begin{equation}
+    e_t
+    =
+    y_t-\ybase_{t|t-1}.
+    \label{eq:base_residual}
+\end{equation}
+
+The proposed models differ only in the representation used to estimate the
+predictable component of $e_t$:
+\begin{align}
+    \text{S3-Forecaster:}
+    \quad&
+    e_{1:t-1}
+    \longmapsto
+    \bm{h}_{t-1}
+    \longmapsto
+    \rhat_{t|t-1},
+    \\
+    \text{S3-FastSketch:}
+    \quad&
+    e_{1:t-1}
+    \longmapsto
+    \bm{\phi}_{t-1}
+    \longmapsto
+    \rhat_{t|t-1}.
+\end{align}
+
+Neither architecture backpropagates through the causal prior or through its
+nonlinear feature extractor. The learned component is restricted to a
+regularized linear readout and a low-dimensional calibration mechanism.
+
+\subsection{Frozen Causal Forecast Prior}
+\label{subsec:causal_prior}
+
+Let
+\begin{equation}
+    f_{\mathrm{base}}:
+    \bigcup_{t\geq1}\R^t
+    \longrightarrow
+    \R
+\end{equation}
+denote a statistical, foundation-model, or heuristic forecasting operator whose
+parameters are frozen during residual adaptation. Its strictly causal output is
+\begin{equation}
+    \ybase_{t|t-1}
+    =
+    f_{\mathrm{base}}
+    \left(
+    y_1,\ldots,y_{t-1};
+    \bm{\theta}_{\mathrm{base}}
+    \right).
+    \label{eq:causal_base}
+\end{equation}
+
+The generic formulation permits the use of rolling estimators, ETS, Prophet,
+ARIMA, or a zero-shot time-series foundation model. The residual adapter does
+not alter $\bm{\theta}_{\mathrm{base}}$. Consequently, adaptation cost is
+independent of the number of parameters in the frozen prior.
+For the lightweight default prior, a causal rolling level estimate is defined
+as
+\begin{equation}
+    \widehat{\mu}_{t-1}^{(w)}
+    =
+    \frac{1}{|\mathcal{W}_{t-1}|}
+    \sum_{j\in\mathcal{W}_{t-1}}y_j,
+    \qquad
+    \mathcal{W}_{t-1}
+    =
+    \left\{
+    \max(1,t-w),\ldots,t-1
+    \right\}.
+\end{equation}
+
+When sufficient monthly history is available, a causal seasonal correction may
+be added:
+\begin{equation}
+    \widehat{s}_{m(t)}
+    =
+    \frac{1}{|\mathcal{I}_{m(t)}|}
+    \sum_{j\in\mathcal{I}_{m(t)}}
+    \left(y_j-\widehat{\mu}_{j-1}^{(w)}\right),
+\end{equation}
+where $\mathcal{I}_{m(t)}$ contains only pre-$t$ observations belonging to the
+same calendar month as $t$. The resulting prior is
+\begin{equation}
+    \ybase_{t|t-1}
+    =
+    \widehat{\mu}_{t-1}^{(w)}
+    +
+    \widehat{s}_{m(t)}.
+\end{equation}
+
+\subsection{S3-Forecaster: Fixed Reservoir Residual Adaptation}
+\label{subsec:s3_forecaster}
+
+\subsubsection{Residual Normalization}
+
+The residual stream is standardized using statistics estimated exclusively
+from the training block:
+\begin{equation}
+    \widetilde{e}_t
+    =
+    \frac{e_t-\widehat{m}_{e}}
+    {\widehat{q}_{0.75}(e)-\widehat{q}_{0.25}(e)+\eps_s},
+    \qquad
+    t\in\Dtrain,
+    \label{eq:residual_scaling}
+\end{equation}
+where $\widehat{m}_{e}$ is the training median and $\eps_s>0$ prevents division
+by zero. The same frozen transformation is used for calibration and testing.
+
+\subsubsection{Echo State Representation}
+
+Let $R$ denote the reservoir dimension. The recurrent state is
+\begin{equation}
+    \bm{h}_t
+    \in
+    [-1,1]^R.
+\end{equation}
+A leaky ESN update is defined by
+\begin{align}
+    \widetilde{\bm{h}}_t
+    &=
+    \tanh
+    \left(
+        \bm{W}_{\mathrm{in}}
+        \begin{bmatrix}
+            1\\
+            \widetilde{e}_t
+        \end{bmatrix}
+        +
+        \bm{W}_{\mathrm{res}}\bm{h}_{t-1}
+    \right),
+    \label{eq:esn_candidate}
+    \\
+    \bm{h}_t
+    &=
+    (1-\lambda_{\mathrm{leak}})\bm{h}_{t-1}
+    +
+    \lambda_{\mathrm{leak}}\widetilde{\bm{h}}_t,
+    \qquad
+    \lambda_{\mathrm{leak}}\in(0,1].
+    \label{eq:esn_state}
+\end{align}
+
+The fixed matrices satisfy
+\begin{align}
+    \bm{W}_{\mathrm{in}}
+    &\in
+    \R^{R\times2},
+    \\
+    \bm{W}_{\mathrm{res}}
+    &\in
+    \R^{R\times R}.
+\end{align}
+They are sampled once from seed-controlled random distributions and are not
+updated during training.
+Let $\widetilde{\bm{W}}_{\mathrm{res}}$ be an initially sampled recurrent
+matrix. Spectral normalization is performed as
+\begin{equation}
+    \bm{W}_{\mathrm{res}}
+    =
+    \rho_\star
+    \frac{
+        \widetilde{\bm{W}}_{\mathrm{res}}
+    }{
+        \rho\!\left(
+        \widetilde{\bm{W}}_{\mathrm{res}}
+        \right)+\eps_\rho
+    },
+    \qquad
+    0<\rho_\star<1.5,
+    \label{eq:spectral_normalization}
+\end{equation}
+where $\rho(\cdot)$ denotes spectral radius.
+The stronger contraction condition
+\begin{equation}
+    \left\|
+    \bm{W}_{\mathrm{res}}
+    \right\|_2
+    <1.5
+\end{equation}
+is sufficient for asymptotic forgetting of initial states under a
+$1$-Lipschitz activation. In practice,
+$\rho(\bm{W}_{\mathrm{res}})<1.5$ is used as the standard reservoir-design
+heuristic. Its purpose is to prevent uncontrolled recurrent amplification while
+retaining a fading memory of the residual history.
+To supplement the nonlinear reservoir with explicit short-term information, an
+autoregressive residual vector is constructed:
+\begin{equation}
+    \bm{\ell}_t^{(p)}
+    =
+    \left[
+    e_t,\,
+    e_{t-1},\,
+    \ldots,\,
+    e_{t-p+1}
+    \right]^\top
+    \in\R^p.
+\end{equation}
+
+The complete S3 representation is
+\begin{equation}
+    \bm{z}_t
+    =
+    \left[
+    1,\,
+    \bm{h}_t^\top,\,
+    \left(\bm{\ell}_t^{(p)}\right)^\top
+    \right]^\top
+    \in
+    \R^{P},
+    \qquad
+    P=1+R+p.
+    \label{eq:s3_representation}
+\end{equation}
+
+\subsubsection{Bayesian Ridge Residual Readout}
+
+For one-step-ahead forecasting, the readout assumes
+\begin{equation}
+    e_{t+1}
+    =
+    \bm{w}^\top\bm{z}_t
+    +
+    \xi_{t+1},
+    \qquad
+    \xi_{t+1}
+    \sim
+    \mathcal{N}(0,\beta^{-1}).
+    \label{eq:bayesian_likelihood}
+\end{equation}
+
+A zero-mean isotropic Gaussian prior is imposed:
+\begin{equation}
+    p(\bm{w}\mid\alpha)
+    =
+    \mathcal{N}
+    \left(
+    \bm{0},
+    \alpha^{-1}\bm{I}_{P}
+    \right).
+    \label{eq:ridge_prior}
+\end{equation}
+
+Let
+\begin{align}
+    \bm{Z}
+    &=
+    \left[
+    \bm{z}_{t_1},\,
+    \ldots,\,
+    \bm{z}_{t_n}
+    \right]^\top
+    \in
+    \R^{n\times P},
+    \\
+    \bm{r}
+    &=
+    \left[
+    e_{t_1+1},\,
+    \ldots,\,
+    e_{t_n+1}
+    \right]^\top
+    \in
+    \R^n.
+\end{align}
+
+The negative log-posterior, excluding constants independent of $\bm{w}$, is
+\begin{equation}
+    \mathcal{J}(\bm{w})
+    =
+    \frac{\beta}{2}
+    \left\|
+    \bm{r}-\bm{Z}\bm{w}
+    \right\|_2^2
+    +
+    \frac{\alpha}{2}
+    \left\|
+    \bm{w}
+    \right\|_2^2.
+    \label{eq:ridge_objective}
+\end{equation}
+
+The Hessian is
+\begin{equation}
+    \nabla_{\bm{w}}^2
+    \mathcal{J}(\bm{w})
+    =
+    \beta\bm{Z}^\top\bm{Z}
+    +
+    \alpha\bm{I}_{P}
+    \succ0
+\end{equation}
+for $\alpha>0$. Therefore, the objective is strictly convex and has a unique
+global minimizer.
+Setting the gradient to zero gives
+\begin{align}
+    \nabla_{\bm{w}}\mathcal{J}(\bm{w})
+    &=
+    -\beta\bm{Z}^\top
+    \left(
+    \bm{r}-\bm{Z}\bm{w}
+    \right)
+    +
+    \alpha\bm{w}
+    =
+    \bm{0},
+    \\
+    \left(
+    \beta\bm{Z}^\top\bm{Z}
+    +
+    \alpha\bm{I}_{P}
+    \right)\bm{w}
+    &=
+    \beta\bm{Z}^\top\bm{r}.
+\end{align}
+
+Hence,
+\begin{equation}
+    \widehat{\bm{w}}_{\mathrm{MAP}}
+    =
+    \left(
+    \beta\bm{Z}^\top\bm{Z}
+    +
+    \alpha\bm{I}_{P}
+    \right)^{-1}
+    \beta\bm{Z}^\top\bm{r}.
+    \label{eq:ridge_closed_form}
+\end{equation}
+
+Equivalently, defining $\lambda_R=\alpha/\beta$,
+\begin{equation}
+    \widehat{\bm{w}}_{\mathrm{MAP}}
+    =
+    \left(
+    \bm{Z}^\top\bm{Z}
+    +
+    \lambda_R\bm{I}_{P}
+    \right)^{-1}
+    \bm{Z}^\top\bm{r}.
+\end{equation}
+
+The complete posterior is
+\begin{align}
+    p(\bm{w}\mid\bm{r},\bm{Z},\alpha,\beta)
+    &=
+    \mathcal{N}
+    \left(
+    \bm{\mu}_w,
+    \bm{\Sigma}_w
+    \right),
+    \\
+    \bm{\Sigma}_w
+    &=
+    \left(
+    \alpha\bm{I}_{P}
+    +
+    \beta\bm{Z}^\top\bm{Z}
+    \right)^{-1},
+    \\
+    \bm{\mu}_w
+    &=
+    \beta
+    \bm{\Sigma}_w
+    \bm{Z}^\top\bm{r}.
+\end{align}
+
+The one-step residual correction is
+\begin{equation}
+    \rhat_{t+1|t}
+    =
+    \bm{\mu}_w^\top\bm{z}_t.
+    \label{eq:s3_raw_residual}
+\end{equation}
+
+The Bayesian derivation provides a probabilistic interpretation of the
+regularized readout. When fixed precision parameters are used, its posterior
+mode is numerically equivalent to conventional Ridge regression. Lasso and
+Elastic Net may be considered as convex sensitivity variants, but they must not
+be described as Bayesian Ridge unless the corresponding prior interpretation is
+explicitly introduced.
+
+\subsubsection{Volatility-Sensitive OOB Gate}
+
+The residual correction is not assumed to be uniformly reliable. A causal
+volatility process is therefore computed from the prior residuals. Let
+\begin{align}
+    \mu_t^{(e)}
+    &=
+    (1-\lambda_v)\mu_{t-1}^{(e)}
+    +
+    \lambda_v e_t,
+    \\
+    q_t^{(e)}
+    &=
+    (1-\lambda_v)q_{t-1}^{(e)}
+    +
+    \lambda_v
+    \left(
+    e_t-\mu_{t-1}^{(e)}
+    \right)^2,
+    \\
+    v_t
+    &=
+    \sqrt{q_t^{(e)}+\eps_v}.
+    \label{eq:causal_volatility}
+\end{align}
+
+The volatility is robustly standardized using training-only statistics:
+\begin{equation}
+    \widetilde{v}_t
+    =
+    \frac{
+        v_t-\operatorname{median}_{j\in\Dtrain}(v_j)
+    }{
+        \operatorname{IQR}_{j\in\Dtrain}(v_j)/1.349+\eps_v
+    }.
+    \label{eq:volatility_standardization}
+\end{equation}
+
+The gate is
+\begin{equation}
+    g_t(a,b)
+    =
+    \sigma
+    \left(
+    a(\widetilde{v}_t-b)
+    \right)
+    =
+    \frac{
+        1
+    }{
+        1+\exp[-a(\widetilde{v}_t-b)]
+    },
+    \qquad
+    g_t\in(0,1).
+    \label{eq:s3_gate}
+\end{equation}
+
+The ESN and its readout are fitted on $\Dtrain$. Keeping these components fixed,
+the two gate parameters are estimated exclusively on the chronological
+calibration block:
+\begin{equation}
+    (\widehat{a},\widehat{b})
+    =
+    \operatorname*{arg\,min}_{
+        a\in[a_{\min},a_{\max}],
+        \,
+        b\in[b_{\min},b_{\max}]
+    }
+    \frac{1}{|\Dcal|}
+    \sum_{t\in\Dcal}
+    \left|
+        e_t
+        -
+        g_{t-1}(a,b)
+        \rhat_{t|t-1}
+    \right|.
+    \label{eq:oob_gate_optimization}
+\end{equation}
+
+This is an out-of-bag optimization with respect to the readout because no
+calibration observation is used to estimate $\bm{w}$. The gate is a
+two-parameter calibration mechanism rather than a second high-capacity
+predictor.
+The final S3 point forecast is
+\begin{equation}
+    \yhat^{\mathrm{S3}}_{t|t-1}
+    =
+    \ybase_{t|t-1}
+    +
+    g_{t-1}(\widehat{a},\widehat{b})
+    \rhat_{t|t-1}.
+    \label{eq:s3_final_forecast}
+\end{equation}
+
+The term \emph{gradient-free} refers to the absence of end-to-end
+backpropagation through the causal prior and reservoir. The bounded
+low-dimensional calibration of $(a,b)$ is not conflated with neural
+gradient-based fine-tuning.
+
+\subsection{S3-FastSketch: Lightweight Multiscale Residual Adaptation}
+\label{subsec:fastsketch}
+
+\subsubsection{Causal Multiscale Feature Map}
+
+S3-FastSketch replaces the recurrent reservoir by a deterministic causal map
+\begin{equation}
+    \Phi:
+    e_{1:t}
+    \longmapsto
+    \bm{\phi}_t
+    \in\R^{D_\phi}.
+\end{equation}
+
+The representation is
+\begin{equation}
+    \bm{\phi}_t
+    =
+    \left[
+    \bm{\ell}_t^\top,\,
+    \bm{a}_t^\top,\,
+    \bm{v}_t^\top,\,
+    \bm{d}_t^\top,\,
+    \bm{c}_t^\top,\,
+    \bm{s}_t^\top
+    \right]^\top.
+    \label{eq:fast_feature_map}
+\end{equation}
+
+Let $\mathcal{Q}=\{q_1,\ldots,q_Q\}$ be a set of causal smoothing spans and
+$\mathcal{K}=\{k_1,\ldots,k_K\}$ a set of local filter scales.
+
+\paragraph{Residual lag block.}
+
+For $p$ autoregressive lags,
+\begin{equation}
+    \bm{\ell}_t
+    =
+    \left[
+    e_{t-1},
+    e_{t-2},
+    \ldots,
+    e_{t-p}
+    \right]^\top
+    \in\R^p.
+\end{equation}
+
+\paragraph{Exponentially weighted residual block.}
+
+For each $q\in\mathcal{Q}$,
+\begin{align}
+    a_t^{(q)}
+    &=
+    (1-\eta_q)a_{t-1}^{(q)}
+    +
+    \eta_qe_t,
+    \\
+    \eta_q
+    &=
+    \frac{2}{q+1}.
+\end{align}
+The block is
+\begin{equation}
+    \bm{a}_t
+    =
+    \left[
+    a_t^{(q_1)},\ldots,a_t^{(q_Q)}
+    \right]^\top.
+\end{equation}
+
+\paragraph{Residual-magnitude block.}
+
+The multiscale magnitude summaries are
+\begin{equation}
+    v_t^{(q)}
+    =
+    (1-\eta_q)v_{t-1}^{(q)}
+    +
+    \eta_q|e_t|,
+\end{equation}
+and
+\begin{equation}
+    \bm{v}_t
+    =
+    \left[
+    v_t^{(q_1)},\ldots,v_t^{(q_Q)}
+    \right]^\top.
+\end{equation}
+
+\paragraph{Local-difference block.}
+
+For $q\in\mathcal{Q}$,
+\begin{equation}
+    d_t^{(q)}
+    =
+    \begin{cases}
+        e_t-e_{t-q}, & t>q,\\
+        0, & t\leq q.
+    \end{cases}
+\end{equation}
+Thus,
+\begin{equation}
+    \bm{d}_t
+    =
+    \left[
+    d_t^{(q_1)},\ldots,d_t^{(q_Q)}
+    \right]^\top.
+\end{equation}
+
+\paragraph{Fixed causal convolutional block.}
+
+For each $k\in\mathcal{K}$, define the causal window
+\begin{equation}
+    \mathcal{W}_{t,k}
+    =
+    \left\{
+    \max(1,t-k+1),\ldots,t
+    \right\}.
+\end{equation}
+
+Its local mean is
+\begin{equation}
+    c_{t,k}^{(\mathrm{mean})}
+    =
+    \frac{1}{|\mathcal{W}_{t,k}|}
+    \sum_{j\in\mathcal{W}_{t,k}}e_j.
+\end{equation}
+
+Its endpoint slope is
+\begin{equation}
+    c_{t,k}^{(\mathrm{slope})}
+    =
+    e_t-e_{\max(1,t-k+1)}.
+\end{equation}
+
+Let $\mathcal{W}_{t,k}^{L}$ and $\mathcal{W}_{t,k}^{R}$ denote the first and
+second halves of $\mathcal{W}_{t,k}$. The local contrast is
+\begin{equation}
+    c_{t,k}^{(\mathrm{contrast})}
+    =
+    \frac{1}{|\mathcal{W}_{t,k}^{R}|}
+    \sum_{j\in\mathcal{W}_{t,k}^{R}}e_j
+    -
+    \frac{1}{|\mathcal{W}_{t,k}^{L}|}
+    \sum_{j\in\mathcal{W}_{t,k}^{L}}e_j.
+\end{equation}
+
+The local absolute energy is
+\begin{equation}
+    c_{t,k}^{(\mathrm{energy})}
+    =
+    \frac{1}{|\mathcal{W}_{t,k}|}
+    \sum_{j\in\mathcal{W}_{t,k}}|e_j|.
+\end{equation}
+
+The convolutional block is the concatenation
+\begin{equation}
+    \bm{c}_t
+    =
+    \operatorname{concat}_{k\in\mathcal{K}}
+    \left[
+    c_{t,k}^{(\mathrm{mean})},
+    c_{t,k}^{(\mathrm{slope})},
+    c_{t,k}^{(\mathrm{contrast})},
+    c_{t,k}^{(\mathrm{energy})}
+    \right].
+\end{equation}
+
+\paragraph{Seasonal and calendar block.}
+
+For monthly seasonality $m=12$,
+\begin{equation}
+    \bm{s}_t
+    =
+    \left[
+    e_{t-m},\,
+    e_t-e_{t-m},\,
+    \sin\left(\frac{2\pi t}{m}\right),\,
+    \cos\left(\frac{2\pi t}{m}\right)
+    \right]^\top,
+    \label{eq:seasonal_sketch}
+\end{equation}
+where unavailable seasonal lags are initialized to zero.
+Each feature dimension is standardized using training medians and interquartile
+ranges:
+\begin{equation}
+    \widetilde{\phi}_{t,j}
+    =
+    \frac{
+        \phi_{t,j}
+        -
+        \operatorname{median}_{u\in\Dtrain}(\phi_{u,j})
+    }{
+        \operatorname{IQR}_{u\in\Dtrain}(\phi_{u,j})/1.349+\eps_\phi
+    }.
+    \label{eq:fast_robust_scaling}
+\end{equation}
+
+\subsubsection{Regularized Residual Readout}
+
+For a forecast horizon $H$, define
+\begin{equation}
+    \bm{r}_{t+1:t+H}
+    =
+    \left[
+    e_{t+1},\ldots,e_{t+H}
+    \right]^\top
+    \in\R^H.
+\end{equation}
+
+The multivariate residual readout is
+\begin{equation}
+    \widehat{\bm{r}}_{t+1:t+H|t}
+    =
+    \bm{W}^{\top}
+    \widetilde{\bm{\phi}}_t,
+    \qquad
+    \bm{W}\in\R^{D_\phi\times H}.
+\end{equation}
+
+Let
+\begin{align}
+    \bm{\Phi}
+    &\in
+    \R^{n_{\mathrm{tr}}\times D_\phi},
+    \\
+    \bm{R}
+    &\in
+    \R^{n_{\mathrm{tr}}\times H}
+\end{align}
+contain the training sketches and future residual targets. The readout solves
+\begin{equation}
+    \widehat{\bm{W}}
+    =
+    \operatorname*{arg\,min}_{\bm{W}}
+    \left\|
+    \bm{R}-\bm{\Phi}\bm{W}
+    \right\|_F^2
+    +
+    \lambda_F
+    \left\|
+    \bm{W}
+    \right\|_F^2.
+    \label{eq:fast_ridge_objective}
+\end{equation}
+
+Its closed-form solution is
+\begin{equation}
+    \widehat{\bm{W}}
+    =
+    \left(
+    \bm{\Phi}^\top\bm{\Phi}
+    +
+    \lambda_F\bm{I}_{D_\phi}
+    \right)^{-1}
+    \bm{\Phi}^\top\bm{R}.
+    \label{eq:fast_ridge_solution}
+\end{equation}
+
+\subsubsection{Projected Calibration Shrinkage}
+
+The raw residual forecast may be unstable when the calibration block is small.
+For each horizon $h$, a single bounded coefficient is therefore estimated from
+calibration pairs
+\begin{equation}
+    \left\{
+    \left(
+    r_{i,h},
+    \widehat{r}_{i,h}
+    \right)
+    \right\}_{i\in\Dcal}.
+\end{equation}
+
+The calibration objective is
+\begin{equation}
+    \mathcal{L}_h(\gamma)
+    =
+    \sum_{i\in\Dcal}
+    \left(
+    r_{i,h}
+    -
+    \gamma\widehat{r}_{i,h}
+    \right)^2.
+    \label{eq:gamma_loss}
+\end{equation}
+
+Differentiating gives
+\begin{align}
+    \frac{\partial\mathcal{L}_h}{\partial\gamma}
+    &=
+    -2
+    \sum_{i\in\Dcal}
+    \widehat{r}_{i,h}
+    \left(
+    r_{i,h}
+    -
+    \gamma\widehat{r}_{i,h}
+    \right),
+    \\
+    0
+    &=
+    \sum_{i\in\Dcal}
+    \widehat{r}_{i,h}r_{i,h}
+    -
+    \gamma
+    \sum_{i\in\Dcal}
+    \widehat{r}_{i,h}^2.
+\end{align}
+
+The unconstrained solution is
+\begin{equation}
+    \widetilde{\gamma}_h
+    =
+    \frac{
+        \displaystyle
+        \sum_{i\in\Dcal}
+        \widehat{r}_{i,h}r_{i,h}
+    }{
+        \displaystyle
+        \sum_{i\in\Dcal}
+        \widehat{r}_{i,h}^2+\eps_\gamma
+    }.
+    \label{eq:fast_gamma_raw}
+\end{equation}
+
+The final coefficient is
+\begin{equation}
+    \widehat{\gamma}_h
+    =
+    \Pi_{[0,\gamma_{\max}]}
+    \left(
+    \widetilde{\gamma}_h
+    \right),
+    \label{eq:fast_gamma_projected}
+\end{equation}
+where the Euclidean projection is
+\begin{equation}
+    \Pi_{[0,\gamma_{\max}]}(x)
+    =
+    \min
+    \left\{
+    \gamma_{\max},
+    \max\{0,x\}
+    \right\}.
+    \label{eq:projection_operator}
+\end{equation}
+
+The lower boundary suppresses a residual correction whose calibration
+association is non-positive, whereas the upper boundary prevents excessive
+amplification. Only one scalar is estimated per horizon, thereby limiting
+calibration variance without requiring nonlinear gate optimization.
+The FastSketch forecast is
+\begin{equation}
+    \yhat^{\mathrm{FS}}_{t+h|t}
+    =
+    \ybase_{t+h|t}
+    +
+    \widehat{\gamma}_h
+    \widehat{r}_{t+h|t},
+    \qquad
+    h=1,\ldots,H.
+    \label{eq:fast_final_forecast}
+\end{equation}
+
+The reported experiments use $H=1$. The multi-horizon notation is retained to
+show that the architecture extends directly by assigning an independent
+readout column and shrinkage coefficient to each horizon.
+
+\subsection{Adaptive Conformal Uncertainty Estimation}
+\label{subsec:aci}
+
+The same uncertainty-estimation layer is applied after either S3-Forecaster or
+S3-FastSketch. Let $\yhat_{t|t-1}$ denote the final point forecast. The
+nonconformity score is
+\begin{equation}
+    s_t
+    =
+    \left|
+    y_t-\yhat_{t|t-1}
+    \right|.
+    \label{eq:nonconformity}
+\end{equation}
+
+For $H>1$, a simultaneous score can be defined as
+\begin{equation}
+    s_t^{(H)}
+    =
+    \max_{h=1,\ldots,H}
+    \left|
+    y_{t+h}-\yhat_{t+h|t}
+    \right|.
+\end{equation}
+
+\subsubsection{Dynamic Score Buffer}
+
+Let $W$ denote the maximum calibration-buffer length. Immediately before
+forecasting $y_t$, the score buffer is
+\begin{equation}
+    \Scal_t
+    =
+    \left\{
+    s_j:
+    \max(t-W,t_{\mathrm{cal},1})
+    \leq j\leq t-1
+    \right\},
+    \label{eq:aci_buffer}
+\end{equation}
+where $t_{\mathrm{cal},1}$ is the first calibration index. Thus,
+\begin{equation}
+    |\Scal_t|
+    \leq W.
+\end{equation}
+
+Given an effective miscoverage level $\delta_t$, define
+\begin{equation}
+    k_t
+    =
+    \min
+    \left\{
+    |\Scal_t|,
+    \left\lceil
+    (|\Scal_t|+1)(1-\delta_t)
+    \right\rceil
+    \right\}.
+\end{equation}
+
+The finite-buffer empirical quantile is
+\begin{equation}
+    q_t(\delta_t)
+    =
+    s_{(k_t)}(\Scal_t),
+    \label{eq:aci_quantile}
+\end{equation}
+where $s_{(k_t)}(\Scal_t)$ is the $k_t$-th order statistic.
+The adaptive conformal interval is
+\begin{equation}
+    \widehat{C}_t
+    =
+    \left[
+    \yhat_{t|t-1}-q_t(\delta_t),
+    \;
+    \yhat_{t|t-1}+q_t(\delta_t)
+    \right].
+    \label{eq:aci_interval}
+\end{equation}
+
+\subsubsection{Sequential Miscoverage Update}
+
+After observing $y_t$, define
+\begin{equation}
+    M_t
+    =
+    \Ind
+    \left\{
+    y_t\notin\widehat{C}_t
+    \right\}.
+    \label{eq:miss_indicator}
+\end{equation}
+
+Let $\delta^\star$ be the target miscoverage, with
+$\delta^\star=0.10$ for nominal $90\%$ coverage. The effective miscoverage is
+updated as
+\begin{equation}
+    \delta_{t+1}
+    =
+    \Pi_{[\delta_{\min},\delta_{\max}]}
+    \left[
+        \delta_t
+        +
+        \eta_{\mathrm{ACI}}
+        \left(
+        \delta^\star-M_t
+        \right)
+    \right],
+    \label{eq:aci_update}
+\end{equation}
+where
+\begin{equation}
+    \Pi_{[\delta_{\min},\delta_{\max}]}(x)
+    =
+    \min
+    \left\{
+    \delta_{\max},
+    \max\{\delta_{\min},x\}
+    \right\}.
+\end{equation}
+
+When a miss occurs, $M_t=1$, the update decreases $\delta_{t+1}$ and therefore
+raises the next empirical quantile, producing a wider interval. When coverage
+is repeatedly achieved, $\delta_t$ can increase gradually, reducing excessive
+width. Finally,
+\begin{equation}
+    \Scal_{t+1}
+    =
+    \operatorname{Tail}_{W}
+    \left(
+    \Scal_t\cup\{s_t\}
+    \right).
+    \label{eq:aci_buffer_update}
+\end{equation}
+
+This construction does not assume a Gaussian residual distribution. Its
+distribution-free interpretation concerns the absence of a parametric error
+law under conformal validity conditions. Under serial dependence and temporal
+drift, ACI targets adaptive long-run miscoverage control; it does not imply
+exact conditional coverage for every individual forecast or every short test
+block.
+
+\subsection{Model Complexity}
+\label{subsec:model_complexity}
+
+For S3-Forecaster, the number of learned readout coefficients is approximately
+\begin{equation}
+    P_{\mathrm{S3}}
+    =
+    H(1+R+p)
+    +
+    2,
+\end{equation}
+where the final two parameters correspond to the OOB gate. The fixed matrices
+$\bm{W}_{\mathrm{in}}$ and $\bm{W}_{\mathrm{res}}$ are excluded because they are
+not trained.
+
+For S3-FastSketch,
+\begin{equation}
+    P_{\mathrm{FS}}
+    =
+    H D_\phi+H,
+\end{equation}
+where the final $H$ coefficients are the calibration shrinkage factors.
+For a dense reservoir, state propagation requires
+\begin{equation}
+    \mathcal{O}(NR^2)
+\end{equation}
+operations, which can be reduced using a sparse recurrent matrix. FastSketch
+feature construction requires approximately
+\begin{equation}
+    \mathcal{O}(ND_\phi).
+\end{equation}
+
+Both methods avoid iterative backpropagation through a nonlinear sequence
+model. Their learned readouts are obtained through convex regularized
+objectives, while FastSketch additionally avoids nonlinear gate calibration.
+
+% =============================================================================
+% 3. EXPERIMENTAL SETUP
+% =============================================================================
+
+\section{Experimental Setup}
+\label{sec:experimental_setup}
+
+\subsection{Datasets and Natural Small-Data Cohorts}
+\label{subsec:datasets}
+
+The empirical evaluation comprises four public monthly forecasting collections---M3 Monthly, M4 Monthly, Tourism Monthly, and CIF 2016---and an anonymized Industrial Construction-Materials Demand dataset, hereafter denoted ICMD. The same experimental procedure is applied independently to every dataset.
+
+The public collections cover heterogeneous forecasting domains, including macroeconomic, demographic, tourism-demand, banking, and general competition series. ICMD contains 61,395 transactional records, 47 original variables, 555 product references, and 62 monthly periods between January 2020 and February 2025. For each eligible product reference \(i\), the monthly target is constructed as
+
+\begin{equation}
+y_{i,t}
+=
+\sum_{j\in\mathcal{T}_{i,t}}
+\mathrm{SalesValue}_{j},
+\label{eq:icmd_aggregation}
+\end{equation}
+
+where \(\mathcal{T}_{i,t}\) denotes the set of valid positive-value transactions associated with product \(i\) during month \(t\). In contrast to a single-reference case study, ICMD is evaluated as a multi-series cohort containing all product-level histories that satisfy the predefined eligibility criteria.
+
+The primary benchmark is restricted to naturally short series. A series is eligible when it has monthly frequency, finite observations, a sufficient unmodified history for chronological training and calibration, and fewer than 200 available pre-test observations. Longer histories are excluded rather than artificially truncated. Consequently, the main benchmark evaluates naturally occurring small-data conditions. Controlled reductions of the available history are introduced only in the Data Efficiency experiment described in Section~\ref{subsec:data_efficiency}.
+
+When a collection contains more than 200 eligible series, at most 200 are selected using a deterministic hash-based ordering with seed \(42\). This selection is performed before model execution and is independent of forecasting performance. All eligible series are retained when the collection contains fewer than 200 candidates. Series identifiers, original lengths, selected development series, and exclusion reasons are stored with the experimental outputs.
+
+\subsection{Development, Failure, and Ranking Cohorts}
+\label{subsec:cohorts}
+
+Let \(\mathcal{E}_d\) denote the eligible series in dataset \(d\), and let \(\mathcal{D}_d\subset\mathcal{E}_d\) denote the series reserved for dataset-level model selection. Development series are excluded from the final benchmark.
+
+Model failures are not silently removed from the experimental record. For each model \(m\), let
+
+\begin{equation}
+\mathcal{S}_{m,d}
+=
+\left\{
+i\in\mathcal{E}_d\setminus\mathcal{D}_d:
+m \text{ completes the evaluation of series } i
+\right\}
+\label{eq:successful_cohort}
+\end{equation}
+
+denote its successful evaluation cohort. The common cohort used for the primary dataset-level ranking is
+
+\begin{equation}
+\mathcal{C}_d
+=
+\left(
+\mathcal{E}_d\setminus\mathcal{D}_d
+\right)
+\cap
+\bigcap_{m\in\mathcal{M}}\mathcal{S}_{m,d},
+\label{eq:common_cohort}
+\end{equation}
+
+where \(\mathcal{M}\) is the complete model set. Thus, every model is ranked using exactly the same series. Model-specific failures, exception messages, and failure rates are reported separately, together with the sizes of \(\mathcal{E}_d\), \(\mathcal{D}_d\), \(\mathcal{S}_{m,d}\), and \(\mathcal{C}_d\). Dataset-level metrics are not pooled across collections with different scales.
+
+\subsection{Reference Models}
+\label{subsec:baselines}
+
+The proposed S3-Forecaster and S3-FastSketch are compared with reference models spanning complementary forecasting paradigms:
+
+\begin{enumerate}
+    \item \textbf{Statistical forecasters:} Naive, Seasonal Naive, AutoRegressive (AR), ARIMA, ETS, and Theta;
+    \item \textbf{Kernel methods:} Kernel Ridge Regression (KRR) and Gaussian Process Regression (GPR);
+    \item \textbf{Lightweight neural forecasters:} EasyTSF-compatible DLinear and NLinear models, a causal one-dimensional CNN, and a unidirectional LSTM;
+    \item \textbf{Time-series foundation models:} Chronos-Bolt-Small, using the \texttt{amazon/chronos-bolt-small} checkpoint, and TimesFM-2.5-200M, using \texttt{google/timesfm-2.5-200m-pytorch};
+    \item \textbf{Proposed models:} S3-Forecaster and S3-FastSketch.
+\end{enumerate}
+
+DLinear, NLinear, CNN, and LSTM use chronological input windows and a temporal validation suffix contained entirely within the training data. Neural samples are not shuffled, and early stopping is determined without access to calibration or test observations. Chronos and TimesFM remain frozen and are evaluated in zero-shot mode; no target-domain gradient update is applied to either foundation model.
+
+Prophet is excluded a priori because repeated fitting over several hundred series and rolling evaluation steps produces a disproportionate computational cost. Its exclusion is based on operational feasibility rather than observed forecasting accuracy. ETS and Theta preserve the statistical trend and seasonality reference class that Prophet would otherwise partially duplicate.
+
+\subsection{Offline Model Selection and Frozen Reuse}
+\label{subsec:hpo}
+
+Hyperparameter selection and final evaluation are treated as disjoint computational phases. For model \(m\) and dataset \(d\), let \(\mathcal{G}_{m,d}\) denote the predefined dataset-level search space. The selected configuration is
+
+\begin{equation}
+\boldsymbol{\theta}^{\star}_{m,d}
+=
+\arg\min_{\boldsymbol{\theta}\in\mathcal{G}_{m,d}}
+\frac{1}{|\mathcal{D}_d|}
+\sum_{i\in\mathcal{D}_d}
+\mathcal{L}_{\mathrm{val}}
+\left(
+m,\boldsymbol{\theta};\mathbf{y}^{(i)}
+\right).
+\label{eq:frozen_hpo}
+\end{equation}
+
+For the S3 models, point-forecast selection uses three chronological validation folds of six observations, 100 optimization trials, and epsilon-stabilized MAPE as the objective. Uncertainty hyperparameters are selected in a subsequent 60-trial study by minimizing
+
+\begin{equation}
+\mathcal{J}_{\mathrm{UQ}}
+=
+\mathrm{MSIS}
++
+\lambda_{\mathrm{cov}}
+\left[
+\max\left\{
+0,\,
+0.90-\mathrm{ECP}
+\right\}
+\right]^2.
+\label{eq:uq_hpo}
+\end{equation}
+
+After selection, \(\boldsymbol{\theta}^{\star}_{m,d}\) is serialized and reused without modification in the main benchmark, ablation, Shock/Non-Shock, Data Efficiency, and Multi-prior experiments. No per-series or test-dependent retuning is permitted. The one-time HPO cost is reported separately and is not included in operational forecasting time.
+
+\subsection{Chronological Splitting and Rolling Evaluation}
+\label{subsec:rolling_protocol}
+
+For a series \(\mathbf{y}^{(i)}=(y^{(i)}_1,\ldots,y^{(i)}_{N_i})\), the chronological boundaries are
+
+\begin{align}
+n_{\mathrm{tr}}^{(i)} &= \left\lfloor 0.64N_i\right\rfloor,\\
+n_{\mathrm{dev}}^{(i)} &= \left\lfloor 0.80N_i\right\rfloor,\\
+n_{\mathrm{cal}}^{(i)} &= n_{\mathrm{dev}}^{(i)}-n_{\mathrm{tr}}^{(i)},\\
+n_{\mathrm{te}}^{(i)} &= N_i-n_{\mathrm{dev}}^{(i)}.
+\end{align}
+
+These boundaries define disjoint training, calibration, and test blocks:
+
+\begin{align}
+\mathcal{I}_{\mathrm{tr}}^{(i)}
+&=
+\left\{1,\ldots,n_{\mathrm{tr}}^{(i)}\right\},\\
+\mathcal{I}_{\mathrm{cal}}^{(i)}
+&=
+\left\{n_{\mathrm{tr}}^{(i)}+1,\ldots,
+n_{\mathrm{dev}}^{(i)}\right\},\\
+\mathcal{I}_{\mathrm{te}}^{(i)}
+&=
+\left\{n_{\mathrm{dev}}^{(i)}+1,\ldots,N_i\right\}.
+\end{align}
+
+All models are evaluated under one-step-ahead rolling forecasting with horizon \(H=1\) and rolling step equal to one. For every \(t\in\mathcal{I}_{\mathrm{te}}^{(i)}\), the forecast and interval satisfy
+
+\begin{equation}
+\widehat{y}_{t\mid t-1},\,
+\widehat{L}_{t\mid t-1},\,
+\widehat{U}_{t\mid t-1}
+\in\mathcal{F}_{t-1},
+\label{eq:causal_forecast}
+\end{equation}
+
+where \(\mathcal{F}_{t-1}\) contains only information available before observing \(y_t\). Once the prediction has been recorded, \(y_t\) may be used to update the causal state and conformal buffer for step \(t+1\). Dataset-level hyperparameters remain frozen throughout the test block.
+
+Preprocessing statistics are estimated exclusively from the training block. Forecasts and interval bounds are inverse-transformed before evaluation, and all reported errors are computed on the original data scale.
+
+\subsection{Common Adaptive Conformal Wrapper}
+\label{subsec:common_aci}
+
+To ensure a homogeneous uncertainty comparison, the same Adaptive Conformal Inference wrapper is applied to every point forecaster, including statistical, kernel, neural, foundation, and S3 models. Native intervals from probabilistic baselines are not used in the primary comparison; they may be reported separately as a supplementary sensitivity analysis.
+
+Let
+
+\begin{equation}
+s_t
+=
+\left|
+y_t-\widehat{y}_{t\mid t-1}
+\right|
+\end{equation}
+
+denote the absolute nonconformity score, and let \(q_t\) be the empirical \(1-\alpha_t\) quantile of the causally available conformity buffer. The prediction interval is
+
+\begin{equation}
+\widehat{C}_t
+=
+\left[
+\widehat{y}_{t\mid t-1}-q_t,\,
+\widehat{y}_{t\mid t-1}+q_t
+\right].
+\label{eq:common_aci_interval}
+\end{equation}
+
+For target miscoverage \(\alpha=0.10\), the adaptive level is updated as
+
+\begin{equation}
+\alpha_{t+1}
+=
+\Pi_{\mathcal{A}}
+\left[
+\alpha_t
++
+\gamma
+\left(
+\alpha-
+\mathbb{I}\{y_t\notin\widehat{C}_t\}
+\right)
+\right],
+\label{eq:common_aci_update}
+\end{equation}
+
+where \(\gamma\) is the frozen adaptation step and \(\Pi_{\mathcal{A}}\) projects the update onto the admissible range. This protocol targets a nominal coverage of \(90\%\) without allowing future test observations to affect the current interval.
+
+\subsection{Component-Wise Ablation Study}
+\label{subsec:ablation}
+
+Ablation experiments reuse the frozen point and uncertainty configurations. Each ablated variant is evaluated on the same chronological partitions and paired series as its corresponding complete model.
+
+For S3-Forecaster, the evaluated variants remove the residual adapter, reservoir states, autoregressive lags, volatility gate, or adapter selector. A static conformal variant is obtained by setting the ACI adaptation step to zero.
+
+For S3-FastSketch, the variants remove the residual adapter, autoregressive lags, EMA residual features, volatility features, momentum features, causal convolutions, seasonal features, calendar features, the complete multiscale sketch, calibration shrinkage, or the adapter selector. A static conformal variant is also included.
+
+For series \(i\), model family \(a\), and ablation \(v\), the paired loss difference is
+
+\begin{equation}
+\Delta\mathcal{L}_{a,v}^{(i)}
+=
+\mathcal{L}_{a,v}^{(i)}
+-
+\mathcal{L}_{a,\mathrm{full}}^{(i)}.
+\label{eq:ablation_delta}
+\end{equation}
+
+Positive values indicate degradation relative to the complete architecture. Ablation summaries are calculated over the common set of series completed by the full model and all compared variants.
+
+\subsection{Shock and Non-Shock Analysis}
+\label{subsec:shock_analysis}
+
+Series are assigned to Shock or Non-Shock regimes using training observations only. For monthly seasonality \(m=12\), the seasonal increment is
+
+\begin{equation}
+d_t^{(i)}
+=
+y_t^{(i)}-y_{t-m}^{(i)},
+\qquad
+t\in\mathcal{I}_{\mathrm{tr}}^{(i)}.
+\end{equation}
+
+A robust location and scale are estimated as
+
+\begin{align}
+c_i
+&=
+\operatorname{median}_{t}
+\left(d_t^{(i)}\right),\\
+\sigma_i
+&=
+1.4826\,
+\operatorname{median}_{t}
+\left|
+d_t^{(i)}-c_i
+\right|.
+\end{align}
+
+When the MAD scale is numerically degenerate, \(\mathrm{IQR}/1.349\) is used as a fallback. The robust shock score is
+
+\begin{equation}
+z_t^{(i)}
+=
+\frac{
+\left|d_t^{(i)}-c_i\right|
+}{
+\max(\sigma_i,\varepsilon_{\sigma})
+}.
+\end{equation}
+
+Observations satisfying \(z_t^{(i)}>3.5\) are flagged, and consecutive flags are collapsed into a single event. A series is assigned to the Shock regime when at least one such event is present in its training block; otherwise, it is assigned to the Non-Shock regime. The label is fixed before test evaluation.
+
+This experiment is therefore a series-stratified robustness analysis rather than a retrospective classification of test observations. For each model, the regime penalty is summarized through
+
+\begin{equation}
+R_m^{\mathrm{shock}}
+=
+\frac{
+\widetilde{\mathcal{L}}_{m,\mathrm{shock}}
+}{
+\widetilde{\mathcal{L}}_{m,\mathrm{nonshock}}+\varepsilon
+},
+\label{eq:shock_penalty}
+\end{equation}
+
+where \(\widetilde{\mathcal{L}}\) denotes the median per-series loss within the corresponding regime. Point accuracy, empirical coverage, interval width, and MSIS are reported separately for Shock and Non-Shock series.
+
+\subsection{Data Efficiency Analysis}
+\label{subsec:data_efficiency}
+
+Data efficiency is evaluated at retained-history fractions
+
+\begin{equation}
+\mathcal{R}
+=
+\left\{
+0.25,\,
+0.50,\,
+0.75,\,
+1.00
+\right\}.
+\end{equation}
+
+For each fraction \(r\), only the most recent \(\lceil rN_i^{\mathrm{pre}}\rceil\) observations of the pre-test history are retained, while the test block, random seed, model configuration, and series identifier remain unchanged. The \(r=1\) condition reuses the full-history benchmark.
+
+A common admissible cohort is determined before executing any fraction. A series is retained only when the smallest history fraction satisfies the seasonal and context-length requirements of every compared model:
+
+\begin{equation}
+\left\lceil
+r_{\min}N_i^{\mathrm{pre}}
+\right\rceil
+\geq
+\max
+\left\{
+2m,\,
+c_{\max}+H+1
+\right\},
+\label{eq:data_efficiency_admissibility}
+\end{equation}
+
+where \(c_{\max}\) is the maximum required input context. All reference and proposed models are evaluated in this analysis. Failed model--fraction cells are explicitly reported and are excluded from comparative curves rather than being silently aggregated.
+
+\subsection{Multi-Prior Robustness}
+\label{subsec:multiprior}
+
+The dependence of the S3 architectures on the baseline prior is assessed without re-optimizing their residual adapters. Let \(p^\star\) denote the prior selected during HPO. The evaluated prior set is
+
+\begin{equation}
+\mathcal{P}
+=
+\left\{
+p^\star,\,
+\text{causal rolling mean},\,
+\text{Seasonal Naive},\,
+\text{ETS},\,
+\text{Theta},\,
+\text{Chronos},\,
+\text{TimesFM}
+\right\}.
+\end{equation}
+
+For every \(p\in\mathcal{P}\), only the prior definition and its required fixed parameters are replaced. Reservoir size, residual lags, sketch features, regularization, shrinkage, gate configuration, calibration split, and ACI hyperparameters remain frozen. Prophet is not included because its repeated rolling execution would impose a disproportionately high computational burden.
+
+The sensitivity of architecture \(a\) to prior \(p\) is measured by
+
+\begin{equation}
+\Delta\mathcal{L}_{a,p}^{(i)}
+=
+\mathcal{L}_{a,p}^{(i)}
+-
+\mathcal{L}_{a,p^\star}^{(i)}.
+\label{eq:multiprior_delta}
+\end{equation}
+
+The analysis reports the median and interquartile range of these differences, the percentage of improved series, the worst-performing prior, between-prior dispersion, and the number of failed evaluations.
+
+
+
+\subsection{Evaluation Metrics and Dataset-Level Aggregation}
+\label{subsec:evaluation_metrics}
+
+Let $\mathcal{C}_d$ denote the common evaluation cohort for dataset $d$, and let $\mathcal{T}_i$ be the test set of series $i$, with $H_i=|\mathcal{T}_i|$. For each $t\in\mathcal{T}_i$, $y_{i,t}$ denotes the observed value, $\widehat{y}_{i,t}$ the one-step-ahead point forecast, and $[\widehat{L}_{i,t},\widehat{U}_{i,t}]$ the corresponding prediction interval. The forecast error is defined as
+
+\begin{equation}
+e_{i,t}
+=
+y_{i,t}-\widehat{y}_{i,t}.
+\label{eq:forecast_error}
+\end{equation}
+
+All metrics are first computed independently for each model--series pair. Dataset-level statistics are subsequently obtained across the common cohort $\mathcal{C}_d$, thereby assigning equal weight to every series rather than pooling observations from series with different test lengths.
+
+\subsubsection{Point-Forecast Metrics}
+
+The epsilon-stabilized Mean Absolute Percentage Error is
+
+\begin{equation}
+\mathrm{MAPE}_{\varepsilon}^{(i)}
+=
+\frac{100}{H_i}
+\sum_{t\in\mathcal{T}_i}
+\frac{
+    |e_{i,t}|
+}{
+    \max\left(|y_{i,t}|,\varepsilon\right)
+},
+\qquad
+\varepsilon=10^{-5}.
+\label{eq:mape_epsilon}
+\end{equation}
+
+The symmetric Mean Absolute Percentage Error is defined as
+
+\begin{equation}
+\mathrm{sMAPE}_{\varepsilon}^{(i)}
+=
+\frac{100}{H_i}
+\sum_{t\in\mathcal{T}_i}
+\frac{
+    2|e_{i,t}|
+}{
+    \max\left(
+        |y_{i,t}|+|\widehat{y}_{i,t}|,
+        \varepsilon
+    \right)
+}.
+\label{eq:smape}
+\end{equation}
+
+To construct a scale-independent absolute error, let
+$\mathbf{y}_{i}^{\mathrm{pre}}=
+(y_{i,1},\ldots,y_{i,n_i^{\mathrm{pre}}})$
+denote the complete pre-test history available for fitting and calibration. The seasonal naive scaling factor is
+
+\begin{equation}
+s_i
+=
+\frac{1}{
+    n_i^{\mathrm{pre}}-m
+}
+\sum_{t=m+1}^{n_i^{\mathrm{pre}}}
+\left|
+    y_{i,t}-y_{i,t-m}
+\right|,
+\label{eq:seasonal_naive_scale}
+\end{equation}
+
+where $m=12$ for the monthly datasets. The Mean Absolute Scaled Error is then
+
+\begin{equation}
+\mathrm{MASE}^{(i)}
+=
+\frac{
+    \displaystyle
+    \frac{1}{H_i}
+    \sum_{t\in\mathcal{T}_i}|e_{i,t}|
+}{
+    s_i
+}.
+\label{eq:mase}
+\end{equation}
+
+A value $\mathrm{MASE}<1$ indicates that the evaluated model produces a lower mean absolute error than the seasonal naive reference associated with the scaling denominator.
+
+The Root Mean Squared Error is computed on the original data scale as
+
+\begin{equation}
+\mathrm{RMSE}^{(i)}
+=
+\sqrt{
+    \frac{1}{H_i}
+    \sum_{t\in\mathcal{T}_i}
+    e_{i,t}^{2}
+}.
+\label{eq:rmse}
+\end{equation}
+
+MAPE and sMAPE are reported as percentages, MASE provides a scale-free comparison against the seasonal naive reference, and RMSE retains sensitivity to large forecast errors. Consequently, these measures are interpreted jointly rather than as interchangeable estimates of predictive performance.
+
+\subsubsection{Prediction-Interval Metrics}
+
+All uncertainty metrics are evaluated at nominal coverage $1-\alpha=0.90$, with $\alpha=0.10$. The Empirical Coverage Probability for series $i$ is
+
+\begin{equation}
+\mathrm{ECP}^{(i)}
+=
+\frac{1}{H_i}
+\sum_{t\in\mathcal{T}_i}
+\mathbb{I}
+\left\{
+    \widehat{L}_{i,t}
+    \leq
+    y_{i,t}
+    \leq
+    \widehat{U}_{i,t}
+\right\}.
+\label{eq:ecp}
+\end{equation}
+
+The mean prediction-interval width is
+
+\begin{equation}
+\mathrm{MW}^{(i)}
+=
+\frac{1}{H_i}
+\sum_{t\in\mathcal{T}_i}
+\left(
+    \widehat{U}_{i,t}
+    -
+    \widehat{L}_{i,t}
+\right).
+\label{eq:mean_width}
+\end{equation}
+
+Because coverage alone can be increased by constructing arbitrarily wide intervals, interval calibration and sharpness are evaluated jointly through the interval score. For observation $t$, the interval score is
+
+\begin{align}
+\mathrm{IS}_{\alpha,i,t}
+={}&
+\left(
+    \widehat{U}_{i,t}
+    -
+    \widehat{L}_{i,t}
+\right)
+\nonumber\\
+&+
+\frac{2}{\alpha}
+\left(
+    \widehat{L}_{i,t}-y_{i,t}
+\right)
+\mathbb{I}
+\left\{
+    y_{i,t}<\widehat{L}_{i,t}
+\right\}
+\nonumber\\
+&+
+\frac{2}{\alpha}
+\left(
+    y_{i,t}-\widehat{U}_{i,t}
+\right)
+\mathbb{I}
+\left\{
+    y_{i,t}>\widehat{U}_{i,t}
+\right\}.
+\label{eq:interval_score}
+\end{align}
+
+The Mean Scaled Interval Score is obtained by normalizing the mean interval score using the same seasonal naive scale employed by MASE:
+
+\begin{equation}
+\mathrm{MSIS}^{(i)}
+=
+\frac{
+    \displaystyle
+    \frac{1}{H_i}
+    \sum_{t\in\mathcal{T}_i}
+    \mathrm{IS}_{\alpha,i,t}
+}{
+    s_i
+}.
+\label{eq:msis}
+\end{equation}
+
+Lower MSIS values indicate sharper intervals with smaller penalties for observations falling outside the interval. ECP is therefore interpreted relative to the nominal value of $0.90$ and jointly with mean width and MSIS; overcoverage is not considered beneficial when it is obtained through excessive interval inflation.
+
+\subsubsection{Dataset-Level Aggregation}
+
+For any per-series metric $x_{j,i}$ associated with model $j$ and series $i$, the dataset-level median is
+
+\begin{equation}
+\widetilde{x}_{j,d}
+=
+Q_{0.50}
+\left(
+    \left\{
+        x_{j,i}:i\in\mathcal{C}_d
+    \right\}
+\right),
+\label{eq:metric_median}
+\end{equation}
+
+and its interquartile range is
+
+\begin{equation}
+\mathrm{IQR}(x_{j,d})
+=
+Q_{0.75}
+\left(
+    \left\{
+        x_{j,i}:i\in\mathcal{C}_d
+    \right\}
+\right)
+-
+Q_{0.25}
+\left(
+    \left\{
+        x_{j,i}:i\in\mathcal{C}_d
+    \right\}
+\right).
+\label{eq:metric_iqr}
+\end{equation}
+
+MAPE, sMAPE, MASE, RMSE, mean interval width, MSIS, trainable parameters, and elapsed time are summarized using the median and IQR. Since coverage is a bounded probability with a direct nominal target, dataset-level ECP is calculated as the unweighted mean of the per-series coverage values:
+
+\begin{equation}
+\overline{\mathrm{ECP}}_{j,d}
+=
+\frac{1}{|\mathcal{C}_d|}
+\sum_{i\in\mathcal{C}_d}
+\mathrm{ECP}_{j,i}.
+\label{eq:mean_ecp}
+\end{equation}
+
+The reported number of series is
+
+\begin{equation}
+n_{\mathrm{series},d}
+=
+|\mathcal{C}_d|,
+\label{eq:n_series}
+\end{equation}
+
+which is identical across models in the primary ranking because all comparisons use the common successful cohort.
+
+Let $P_{j,i}$ denote the number of target-domain trainable parameters and let $\tau_{j,i}$ denote the elapsed time required for final fitting and rolling prediction. Computational summaries are defined as
+
+\begin{align}
+\widetilde{P}_{j,d}
+&=
+\operatorname{median}_{i\in\mathcal{C}_d}
+P_{j,i},
+\\
+\widetilde{\tau}_{j,d}
+&=
+\operatorname{median}_{i\in\mathcal{C}_d}
+\tau_{j,i}.
+\label{eq:computational_aggregation}
+\end{align}
+
+Frozen foundation-model weights and fixed random projections are excluded from $P_{j,i}$ because they are not adjusted using the target series. Their total parameter footprint is reported separately. Elapsed time excludes environment installation, checkpoint downloading, and offline hyperparameter optimization.
+
+Finally, the dataset-specific ordinal ranking is obtained by sorting the models in ascending order of median $\mathrm{MAPE}_{\varepsilon}$:
+
+\begin{equation}
+\operatorname{Rank}_{j,d}
+=
+\operatorname{rank}_{\uparrow}
+\left(
+    \widetilde{\mathrm{MAPE}}_{\varepsilon,j,d}
+\right).
+\label{eq:model_rank}
+\end{equation}
+
+The ranking is interpreted together with sMAPE, MASE, RMSE, ECP, mean width, and MSIS, since no individual metric fully characterizes point accuracy, robustness to scale, and uncertainty quality.
+
+Operational runtime includes final fitting and rolling forecasting after loading the frozen configuration. HPO, checkpoint downloading, and environment installation are excluded and reported separately. Trainable-parameter counts include coefficients estimated from the target series but exclude frozen foundation-model weights and fixed random feature matrices. The total parameter footprint of frozen pretrained models is reported separately to avoid interpreting zero target-domain trainable parameters as zero computational complexity.
+
+\subsection{Reproducibility Controls}
+\label{subsec:reproducibility}
+
+All experiments use fixed random seeds and repository commits. Dataset identifiers, natural series lengths, development exclusions, common cohorts, frozen configurations, model failures, per-series forecasts, and per-series metrics are persisted before aggregation. Neural models are trained without temporal shuffling, and no test observation is used for preprocessing, model selection, early stopping, gate calibration, or conformal initialization. These controls ensure that all reported rankings correspond to a common causal evaluation protocol rather than to model-specific subsets or retrospectively selected histories.
+
+\input{results_and_discussion.tex}
+
+\section{Conclusions}
+
+
+
+
+
+
+\section*{CRediT authorship contribution statement}
+
+Alejandro Patino Bedoya:
+Conceptualization,
+Methodology,
+Software,
+Validation,
+Formal analysis,
+Investigation,
+Data curation,
+Visualization,
+Project administration,
+Writing -- original draft,
+Writing -- review and editing.
+
+\section*{Declaration of competing interest}
+
+The author declares that they have no known competing financial
+interests or personal relationships that could have appeared to
+influence the work reported in this paper.
+
+\section*{Data availability}
+
+The M3, M4, Tourism, and CIF 2016 benchmark datasets used in this
+study are publicly available from the original sources cited in the
+manuscript. The source code, selected public-series identifiers,
+truncation lengths, random seeds, serialized hyperparameter
+configurations, and scripts required to reproduce the public benchmark,
+ablation, data-efficiency, and multi-prior experiments are openly
+available at \url{https://github.com/AlejoPatigno/S3Forecaster-S3FastSketch}.
+
+The Industrial Construction-Materials Demand dataset cannot be made
+publicly available because the underlying transactional records contain
+confidential commercial information and are subject to data-use
+restrictions imposed by the data owner. The manuscript reports the
+target definition, monthly aggregation procedure, chronological
+partitions, preprocessing protocol, model configurations, and evaluation
+procedure required to reproduce the methodological workflow. Access to
+the proprietary records cannot be guaranteed and would require explicit
+authorization from the data owner.
+
+\section*{Funding}
+
+Financial support was provided by Minciencias under the program “Plataforma de analítica de datos como soporte a la gestión de la demanda operacional en la industria manufacturera de la red de aliados de RevloG” code 825223, Universidad Nacional de Colombia
+
+\section*{Declaration of generative AI and AI-assisted technologies
+in the manuscript preparation process}
+
+During the preparation of this work, the author used OpenAI's ChatGPT
+to support literature organization, language refinement, and structural
+editing. After using this tool, the author reviewed, verified, and edited
+the content as needed and takes full responsibility for the content of
+the published article.
+
+\begin{thebibliography}{99}
+
+
+
+\bibitem{park2024forchestra}
+Y.-J. Park, D. Kim, F. Odermatt, J. Lee, and K.-M. Kim, ``A scalable and transferable time series prediction framework for demand forecasting,'' arXiv preprint arXiv:2402.19402, 2024. \url{https://arxiv.org/abs/2402.19402}
+
+\bibitem{li2022intermittent}
+L. Li, Y. Kang, F. Petropoulos, and F. Li, ``Feature-based intermittent demand forecast combinations: Bias, accuracy and inventory implications,'' arXiv preprint arXiv:2204.08283, 2022. \url{https://arxiv.org/abs/2204.08283}
+
+\bibitem{kaur2020smartgrid}
+D. Kaur, S. N. Islam, M. A. Mahmud, M. E. Haque, and Z. Y. Dong, ``Energy forecasting in smart grid systems: A review of the state-of-the-art techniques,'' arXiv preprint arXiv:2011.12598, 2020. \url{https://arxiv.org/abs/2011.12598}
+
+\bibitem{zhu2019pdm}
+T. Zhu, Y. Ran, X. Zhou, and Y. Wen, ``A survey of predictive maintenance: Systems, purposes and approaches,'' arXiv preprint arXiv:1912.07383, 2019. \url{https://arxiv.org/abs/1912.07383}
+
+\bibitem{lim2021survey}
+B. Lim and S. Zohren, ``Time-series forecasting with deep learning: A survey,'' \emph{Philosophical Transactions of the Royal Society A}, vol. 379, no. 2194, p. 20200209, 2021. \url{https://doi.org/10.1098/rsta.2020.0209}
+
+\bibitem{rozanec2021lumpy}
+J. M. Ro\v{z}anec and D. Mladeni\'c, ``Reframing demand forecasting: A two-fold approach for lumpy and intermittent demand,'' arXiv preprint arXiv:2103.13812, 2021. \url{https://arxiv.org/abs/2103.13812}
+
+\bibitem{gao2023sedan}
+Y. Gao, Y. Wang, and Q. Wang, ``Improving the transferability of time series forecasting with decomposition adaptation,'' arXiv preprint arXiv:2307.00066, 2023. \url{https://arxiv.org/abs/2307.00066}
+
+\bibitem{hochreiter1997lstm}
+S. Hochreiter and J. Schmidhuber, ``Long short-term memory,'' \emph{Neural Computation}, vol. 9, no. 8, pp. 1735--1780, 1997. \url{https://doi.org/10.1162/neco.1997.9.8.1735}
+
+\bibitem{zhou2021informer}
+H. Zhou, S. Zhang, J. Peng, S. Zhang, J. Li, H. Xiong, and W. Zhang, ``Informer: Beyond efficient transformer for long sequence time-series forecasting,'' in \emph{Proceedings of the AAAI Conference on Artificial Intelligence}, vol. 35, no. 12, pp. 11106--11115, 2021. \url{https://doi.org/10.1609/aaai.v35i12.17325}
+
+\bibitem{nie2023patchtst}
+Y. Nie, N. H. Nguyen, P. Sinthong, and J. Kalagnanam, ``A time series is worth 64 words: Long-term forecasting with transformers,'' in \emph{International Conference on Learning Representations}, 2023. \url{https://arxiv.org/abs/2211.14730}
+
+\bibitem{ansari2024chronos}
+A. F. Ansari, L. Stella, C. Turkmen, X. Zhang, P. Mercado, H. Shen, O. Shchur, S. S. Rangapuram, S. P. Arango, S. Kapoor, J. Zschiegner, D. C. Maddix, H. Wang, M. W. Mahoney, K. Torkkola, A. G. Wilson, M. Bohlke-Schneider, and Y. Wang, ``Chronos: Learning the language of time series,'' \emph{Transactions on Machine Learning Research}, 2024. \url{https://arxiv.org/abs/2403.07815}
+
+\bibitem{das2024timesfm}
+A. Das, W. Kong, R. Sen, and Y. Zhou, ``A decoder-only foundation model for time-series forecasting,'' in \emph{Proceedings of the International Conference on Machine Learning}, 2024. \url{https://arxiv.org/abs/2310.10688}
+
+\bibitem{zeng2023dlinear}
+A. Zeng, M. Chen, L. Zhang, and Q. Xu, ``Are transformers effective for time series forecasting?,'' in \emph{Proceedings of the AAAI Conference on Artificial Intelligence}, vol. 37, no. 9, pp. 11121--11128, 2023. \url{https://doi.org/10.1609/aaai.v37i9.26317}
+
+\bibitem{shen2023gbt}
+L. Shen, Y. Wei, and Y. Wang, ``GBT: Two-stage transformer framework for non-stationary time series forecasting,'' arXiv preprint arXiv:2307.08302, 2023. \url{https://arxiv.org/abs/2307.08302}
+
+\bibitem{ehrig2024similarity}
+C. Ehrig, B. Sonnleitner, U. Neumann, C. Cleophas, and G. Forestier, ``The impact of data set similarity and diversity on transfer learning success in time series forecasting,'' arXiv preprint arXiv:2404.06198, 2024. \url{https://arxiv.org/abs/2404.06198}
+
+\bibitem{hamilton1990regime}
+J. D. Hamilton, ``Analysis of time series subject to changes in regime,'' \emph{Journal of Econometrics}, vol. 45, no. 1--2, pp. 39--70, 1990. \url{https://doi.org/10.1016/0304-4076(90)90093-9}
+
+\bibitem{hamilton1994arch}
+J. D. Hamilton and R. Susmel, ``Autoregressive conditional heteroskedasticity and changes in regime,'' \emph{Journal of Econometrics}, vol. 64, no. 1--2, pp. 307--333, 1994. \url{https://doi.org/10.1016/0304-4076(94)90067-1}
+
+\bibitem{callot2014tvpvar}
+L. Callot and J. T. Kristensen, ``Vector autoregressions with parsimoniously time-varying parameters and an application to monetary policy,'' arXiv preprint arXiv:1411.0877, 2014. \url{https://arxiv.org/abs/1411.0877}
+
+\bibitem{fischer2021tvpvar}
+M. M. Fischer, N. Hauzenberger, F. Huber, and M. Pfarrhofer, ``General Bayesian time-varying parameter VARs for predicting government bond yields,'' arXiv preprint arXiv:2102.13393, 2021. \url{https://arxiv.org/abs/2102.13393}
+
+\bibitem{onorante2014dma}
+L. Onorante and A. E. Raftery, ``Dynamic model averaging in large model spaces using dynamic Occam's window,'' arXiv preprint arXiv:1410.7799, 2014. \url{https://arxiv.org/abs/1410.7799}
+
+\bibitem{adams2007bocpd}
+R. P. Adams and D. J. C. MacKay, ``Bayesian online changepoint detection,'' arXiv preprint arXiv:0710.3742, 2007. \url{https://arxiv.org/abs/0710.3742}
+
+\bibitem{wendelberger2021bocpd}
+L. J. Wendelberger, J. M. Gray, B. J. Reich, and A. G. Wilson, ``Monitoring deforestation using multivariate Bayesian online changepoint detection with outliers,'' arXiv preprint arXiv:2112.12899, 2021. \url{https://arxiv.org/abs/2112.12899}
+
+\bibitem{lu2020drift}
+J. Lu, A. Liu, F. Dong, F. Gu, J. Gama, and G. Zhang, ``Learning under concept drift: A review,'' \emph{IEEE Transactions on Knowledge and Data Engineering}, vol. 31, no. 12, pp. 2346--2363, 2020. \url{https://doi.org/10.1109/TKDE.2018.2876857}
+
+\bibitem{tosi2023optwin}
+M. D. L. Tosi and M. Theobald, ``OPTWIN: Drift identification with optimal sub-windows,'' arXiv preprint arXiv:2305.11942, 2023. \url{https://arxiv.org/abs/2305.11942}
+
+\bibitem{zhang2023onenet}
+Y.-F. Zhang, Q. Wen, X. Wang, W. Chen, L. Sun, Z. Zhang, L. Wang, R. Jin, and T. Tan, ``OneNet: Enhancing time series forecasting models under concept drift by online ensembling,'' in \emph{Advances in Neural Information Processing Systems}, vol. 36, 2023. \url{https://arxiv.org/abs/2309.12659}
+
+\bibitem{zhang2024d3a}
+Y. Zhang, W. Chen, Z. Zhu, D. Qin, L. Sun, X. Wang, Q. Wen, Z. Zhang, L. Wang, and R. Jin, ``Addressing concept shift in online time series forecasting: Detect-then-adapt,'' arXiv preprint arXiv:2403.14949, 2024. \url{https://arxiv.org/abs/2403.14949}
+
+\bibitem{zhao2024proceed}
+L. Zhao and Y. Shen, ``Proactive model adaptation against concept drift for online time series forecasting,'' arXiv preprint arXiv:2412.08435, 2024. \url{https://arxiv.org/abs/2412.08435}
+
+\bibitem{casini2018forecast}
+A. Casini, ``Tests for forecast instability and forecast failure under a continuous record asymptotic framework,'' arXiv preprint arXiv:1803.10883, 2018. \url{https://arxiv.org/abs/1803.10883}
+
+\bibitem{angelopoulos2023conformal}
+A. N. Angelopoulos and S. Bates, ``Conformal prediction: A gentle introduction,'' \emph{Foundations and Trends in Machine Learning}, vol. 16, no. 4, pp. 494--591, 2023. \url{https://doi.org/10.1561/2200000101}
+
+\bibitem{bollerslev1986garch}
+T. Bollerslev, ``Generalized autoregressive conditional heteroskedasticity,'' \emph{Journal of Econometrics}, vol. 31, no. 3, pp. 307--327, 1986. \url{https://doi.org/10.1016/0304-4076(86)90063-1}
+
+\bibitem{wang2012gp}
+C. Wang and R. M. Neal, ``Gaussian process regression with heteroscedastic or non-Gaussian residuals,'' arXiv preprint arXiv:1212.6246, 2012. \url{https://arxiv.org/abs/1212.6246}
+
+\bibitem{tolvanen2014gp}
+V. Tolvanen, P. Jyl\"anki, and A. Vehtari, ``Approximate inference for nonstationary heteroscedastic Gaussian process regression,'' arXiv preprint arXiv:1404.5443, 2014. \url{https://arxiv.org/abs/1404.5443}
+
+\bibitem{karlsson2021skewvar}
+S. Karlsson, S. Mazur, and H. Nguyen, ``Vector autoregression models with skewness and heavy tails,'' arXiv preprint arXiv:2105.11182, 2021. \url{https://arxiv.org/abs/2105.11182}
+
+\bibitem{shafer2008tutorial}
+G. Shafer and V. Vovk, ``A tutorial on conformal prediction,'' \emph{Journal of Machine Learning Research}, vol. 9, pp. 371--421, 2008. \url{https://www.jmlr.org/papers/v9/shafer08a.html}
+
+\bibitem{zaffran2022adaptive}
+M. Zaffran, A. Dieuleveut, O. F\'eron, Y. Goude, and J. Josse, ``Adaptive conformal predictions for time series,'' in \emph{Proceedings of the 39th International Conference on Machine Learning}, \emph{Proceedings of Machine Learning Research}, vol. 162, pp. 25834--25866, 2022. \url{https://proceedings.mlr.press/v162/zaffran22a.html}
+
+\bibitem{xu2023spci}
+C. Xu and Y. Xie, ``Sequential predictive conformal inference for time series,'' in \emph{Proceedings of the 40th International Conference on Machine Learning}, \emph{Proceedings of Machine Learning Research}, vol. 202, pp. 38707--38727, 2023. \url{https://arxiv.org/abs/2212.03463}
+
+\bibitem{gibbs2021aci}
+I. Gibbs and E. Cand\`es, ``Adaptive conformal inference under distribution shift,'' in \emph{Advances in Neural Information Processing Systems}, vol. 34, pp. 1660--1672, 2021. \url{https://arxiv.org/abs/2106.00170}
+
+\bibitem{gibbs2024online}
+I. Gibbs and E. Cand\`es, ``Conformal inference for online prediction with arbitrary distribution shifts,'' \emph{Journal of Machine Learning Research}, vol. 25, no. 162, pp. 1--36, 2024. \url{https://www.jmlr.org/papers/v25/22-1218.html}
+
+\bibitem{cerqueira2020evaluation}
+V. Cerqueira, L. Torgo, and I. Mozeti\v{c}, ``Evaluating time series forecasting models: An empirical study on performance estimation methods,'' \emph{Machine Learning}, vol. 109, pp. 1997--2028, 2020. \url{https://doi.org/10.1007/s10994-020-05910-7}
+
+\bibitem{burkner2020lfo}
+P.-C. B\"urkner, J. Gabry, and A. Vehtari, ``Approximate leave-future-out cross-validation for Bayesian time series models,'' \emph{Journal of Statistical Computation and Simulation}, vol. 90, no. 14, pp. 2499--2523, 2020. \url{https://doi.org/10.1080/00949655.2020.1783262}
+
+\bibitem{jaeger2004science}
+H. Jaeger and H. Haas, ``Harnessing nonlinearity: Predicting chaotic systems and saving energy in wireless communication,'' \emph{Science}, vol. 304, no. 5667, pp. 78--80, 2004. \url{https://doi.org/10.1126/science.1091277}
+
+\bibitem{armenio2019esn}
+L. B. Armenio, E. Terzi, M. Farina, and R. Scattolini, ``Echo State Networks: Analysis, training and predictive control,'' arXiv preprint arXiv:1902.01618, 2019. \url{https://arxiv.org/abs/1902.01618}
+
+\bibitem{lukosevicius2009reservoir}
+M. Luko\v{s}evi\v{c}ius and H. Jaeger, ``Reservoir computing approaches to recurrent neural network training,'' \emph{Computer Science Review}, vol. 3, no. 3, pp. 127--149, 2009. \url{https://doi.org/10.1016/j.cosrev.2009.03.005}
+
+\bibitem{maass2002reservoir}
+W. Maass, T. Natschl\"ager, and H. Markram, ``Real-time computing without stable states: A new framework for neural computation based on perturbations,'' \emph{Neural Computation}, vol. 14, no. 11, pp. 2531--2560, 2002. \url{https://doi.org/10.1162/089976602760407955}
+
+
+
+\bibitem{makridakis2020m4}
+S. Makridakis, E. Spiliotis, and V. Assimakopoulos, ``The M4 Competition: 100,000 time series and 61 forecasting methods,'' \emph{International Journal of Forecasting}, vol. 36, no. 1, pp. 54--74, 2020. \url{https://doi.org/10.1016/j.ijforecast.2019.04.014}
+
+\bibitem{makridakis2000m3}
+S. Makridakis and M. Hibon, ``The M3-Competition: results, conclusions and implications,'' \emph{International Journal of Forecasting}, vol. 16, no. 4, pp. 451--476, 2000. \url{https://doi.org/10.1016/S0169-2070(00)00057-1}
+
+\bibitem{athanasopoulos2011tourism}
+G. Athanasopoulos, R. J. Hyndman, H. Song, and D. C. Wu, ``The tourism forecasting competition,'' \emph{International Journal of Forecasting}, vol. 27, no. 3, pp. 822--844, 2011. \url{https://doi.org/10.1016/j.ijforecast.2010.04.009}
+
+\bibitem{stepnicka2017cif}
+M. \v{S}t\v{e}pni\v{c}ka and M. Burda, ``Computational Intelligence in Forecasting Competition: introduction and results,'' \emph{International Journal of Forecasting}, vol. 33, no. 1, pp. 1--4, 2017. \url{https://doi.org/10.1016/j.ijforecast.2016.07.004}
+
+\end{thebibliography}
+
+\end{document}
