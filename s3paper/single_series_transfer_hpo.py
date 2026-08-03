@@ -324,6 +324,69 @@ def evaluate_frozen_configuration_on_collection(
     }
 
 
+def _partition_group_evaluation(
+    evaluation: dict[str, Any],
+    hpo_series_ids,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Label all-series results and derive the untouched transfer view."""
+
+    hpo_ids = {str(series_id) for series_id in hpo_series_ids}
+    labeled = dict(evaluation)
+
+    per_series = evaluation["per_series_metrics"].copy()
+    if "series_id" in per_series:
+        per_series["evaluation_role"] = np.where(
+            per_series["series_id"].astype(str).isin(hpo_ids),
+            "hpo_series",
+            "untouched_series",
+        )
+    labeled["per_series_metrics"] = per_series
+
+    failed = evaluation["failed_series"].copy()
+    if "series_id" in failed:
+        failed["evaluation_role"] = np.where(
+            failed["series_id"].astype(str).isin(hpo_ids),
+            "hpo_series",
+            "untouched_series",
+        )
+    labeled["failed_series"] = failed
+
+    forecasts = evaluation["forecasts"].copy()
+    if "series_id" in forecasts:
+        forecasts["evaluation_role"] = np.where(
+            forecasts["series_id"].astype(str).isin(hpo_ids),
+            "hpo_series",
+            "untouched_series",
+        )
+    labeled["forecasts"] = forecasts
+
+    untouched_per_series = per_series[
+        per_series["evaluation_role"].eq("untouched_series")
+    ].copy()
+    untouched_failed = failed[
+        failed["evaluation_role"].eq("untouched_series")
+    ].copy()
+    untouched_forecasts = (
+        forecasts[forecasts["evaluation_role"].eq("untouched_series")].copy()
+        if "evaluation_role" in forecasts
+        else forecasts.copy()
+    )
+    untouched = {
+        "per_series_metrics": untouched_per_series,
+        "aggregate_metrics": _aggregate_metrics(
+            untouched_per_series,
+            len(untouched_failed),
+        ),
+        "forecasts": untouched_forecasts,
+        "failed_series": untouched_failed,
+        "aggregate_series_ids": (
+            untouched_per_series["series_id"].astype(str).tolist()
+            if "series_id" in untouched_per_series
+            else []
+        ),
+    }
+    return labeled, untouched
+
 def _study_to_frame(study) -> pd.DataFrame:
     try:
         return study.trials_dataframe()
@@ -350,6 +413,20 @@ def save_single_series_transfer_results(result: dict[str, Any], output_dir: str 
         "point_study": output / "point_study.csv",
         "uq_study": output / "uq_study.csv",
     }
+    if "untouched_evaluation_results" in result:
+        paths.update(
+            {
+                "untouched_per_series_metrics": (
+                    output / "untouched_per_series_metrics.csv"
+                ),
+                "untouched_aggregate_metrics": (
+                    output / "untouched_aggregate_metrics.csv"
+                ),
+                "untouched_failed_series": (
+                    output / "untouched_failed_series.csv"
+                ),
+            }
+        )
     _write_json(paths["metadata"], result["metadata"])
     _write_json(paths["best_point_params"], result["best_point_params"])
     _write_json(paths["best_uq_params"], result["best_uq_params"])
@@ -370,6 +447,20 @@ def save_single_series_transfer_results(result: dict[str, Any], output_dir: str 
     result["evaluation_results"]["per_series_metrics"].to_csv(paths["per_series_metrics"], index=False)
     result["aggregate_metrics"].to_csv(paths["aggregate_metrics"], index=False)
     result["evaluation_results"]["failed_series"].to_csv(paths["failed_series"], index=False)
+    if "untouched_evaluation_results" in result:
+        untouched = result["untouched_evaluation_results"]
+        untouched["per_series_metrics"].to_csv(
+            paths["untouched_per_series_metrics"],
+            index=False,
+        )
+        untouched["aggregate_metrics"].to_csv(
+            paths["untouched_aggregate_metrics"],
+            index=False,
+        )
+        untouched["failed_series"].to_csv(
+            paths["untouched_failed_series"],
+            index=False,
+        )
     _study_to_frame(result["point_study"]).to_csv(paths["point_study"], index=False)
     _study_to_frame(result["uq_study"]).to_csv(paths["uq_study"], index=False)
     forecasts = result["evaluation_results"]["forecasts"]
@@ -655,11 +746,12 @@ def run_group_hpo_transfer_experiment(
     calibration_ratio=0.16,
     test_ratio=0.20,
     point_objective_metric="smape_percent",
+    include_hpo_series_in_evaluation=True,
     git_commit=None,
     output_dir: str | Path | None = None,
     prior_names: tuple[str, ...] | list[str] | None = None,
 ):
-    """Tune on an HPO group, freeze parameters, and evaluate on untouched series."""
+    """Tune on an HPO group and report both all-series and untouched views."""
 
     model_name = _canonical_model_name(model_name)
     hpo = optimize_on_development_series_group(
@@ -681,7 +773,11 @@ def run_group_hpo_transfer_experiment(
     alpha = 1.0 - float(target_coverage)
     evaluation = evaluate_frozen_configuration_on_collection(
         series_map,
-        development_series_ids=hpo["development_series_ids"],
+        development_series_ids=(
+            []
+            if include_hpo_series_in_evaluation
+            else hpo["development_series_ids"]
+        ),
         model_name=model_name,
         best_point_params=hpo["best_point_params"],
         best_uq_params=hpo["best_uq_params"],
@@ -690,6 +786,10 @@ def run_group_hpo_transfer_experiment(
         train_ratio=train_ratio,
         calibration_ratio=calibration_ratio,
         test_ratio=test_ratio,
+    )
+    evaluation, untouched_evaluation = _partition_group_evaluation(
+        evaluation,
+        hpo["development_series_ids"],
     )
     commit = git_commit or current_git_commit()
     metadata = {
@@ -707,6 +807,14 @@ def run_group_hpo_transfer_experiment(
         "cross_validation": False,
         "one_hpo_series_per_dataset": False,
         "hpo_repeated_per_series": False,
+        "include_hpo_series_in_evaluation": bool(
+            include_hpo_series_in_evaluation
+        ),
+        "evaluation_scope": (
+            "all_series"
+            if include_hpo_series_in_evaluation
+            else "untouched_series"
+        ),
         "hpo_aggregation": "median",
         "point_objective_metric": point_objective_metric,
         "uq_objective_metric": "median_msis_plus_coverage_penalty",
@@ -735,7 +843,11 @@ def run_group_hpo_transfer_experiment(
             "development_per_series_metrics"
         ],
         "evaluation_results": evaluation,
+        "untouched_evaluation_results": untouched_evaluation,
         "aggregate_metrics": evaluation["aggregate_metrics"],
+        "untouched_aggregate_metrics": untouched_evaluation[
+            "aggregate_metrics"
+        ],
         "metadata": metadata,
     }
     if output_dir is not None:
