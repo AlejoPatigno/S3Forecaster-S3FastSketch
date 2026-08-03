@@ -164,7 +164,24 @@ def test_group_hpo_uses_requested_series_and_excludes_them(monkeypatch):
 
     assert calls == {"point_ids": ["S1", "S2"], "uq_ids": ["S1", "S2"]}
     assert result["development_series_ids"] == ["S1", "S2"]
-    assert result["evaluation_results"]["aggregate_series_ids"] == ["S3"]
+    assert result["evaluation_results"]["aggregate_series_ids"] == [
+        "S1",
+        "S2",
+        "S3",
+    ]
+    assert result["untouched_evaluation_results"]["aggregate_series_ids"] == [
+        "S3"
+    ]
+    roles = result["evaluation_results"]["per_series_metrics"].set_index(
+        "series_id"
+    )["evaluation_role"].to_dict()
+    assert roles == {
+        "S1": "hpo_series",
+        "S2": "hpo_series",
+        "S3": "untouched_series",
+    }
     assert result["metadata"]["n_hpo_series"] == 2
+    assert result["metadata"]["evaluation_scope"] == "all_series"
+    assert result["metadata"]["include_hpo_series_in_evaluation"] is True
     assert result["metadata"]["hpo_aggregation"] == "median"
     assert result["metadata"]["point_objective_metric"] == "smape_percent"
